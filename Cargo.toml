@@ -1,0 +1,100 @@
+[package]
+name = "starfish-window"
+version = "0.1.0"
+edition = "2024"
+description = "跨平台单窗口 + 事件（SDL 风格 poll 模型），零依赖基础层，可选 wgpu 对接"
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+repository = "https://github.com/GuYeying/starfish-window"
+
+# cdylib：Android APK 需要（配 android-demo feature 导出 android_main）。
+# 已知成本：桌面构建也会多产出一个动态库文件。
+[lib]
+crate-type = ["lib", "cdylib"]
+
+[features]
+default = ["event"]
+# 事件以窗口为事件源：启用 event 必然带上 window。
+event = ["window"]
+# 仅建窗能力（无事件拉取）。
+window = []
+# 安全对接 wgpu：实现 raw-window-handle trait，使 instance.create_surface(&window) 直通。
+# 刻意不依赖 wgpu 本体。
+wgpu = ["dep:raw-window-handle", "window"]
+# 内置 Android 演示宿主（logcat 事件循环 + 退出契约）。
+# 打 APK：cargo apk build --features android-demo
+# 注意：这里用旧式 feature 语法（dep: 语法无法引用 target 门控的可选依赖）。
+android-demo = ["android_logger", "log", "libc"]
+
+[dependencies]
+raw-window-handle = { version = "0.6", optional = true }
+# 仅 android-demo feature 使用（演示宿主）；不启用则零成本。
+# 不按 target 门控：cargo 的 feature 无法跨 target 引用可选依赖。
+android_logger = { version = "0.14", optional = true }
+log = { version = "0.4", optional = true }
+libc = { version = "0.2", optional = true }
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+    "Win32_Foundation",
+    "Win32_Graphics_Gdi",
+    "Win32_System_LibraryLoader",
+    "Win32_UI_HiDpi",
+    "Win32_UI_Input_KeyboardAndMouse",
+    "Win32_UI_WindowsAndMessaging",
+] }
+
+# Web 后端：DOM 事件缓冲进队列。wasm-bindgen 版本必须与 wasm-bindgen-cli 精确一致；
+# 被 wgpu(dev-dep)→web-sys 0.3.104 钉在 0.2.127。
+[target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
+wasm-bindgen = "=0.2.127"
+web-sys = { version = "0.3", features = [
+    "console",
+    "CssStyleDeclaration",
+    "Document",
+    "DomRect",
+    "Element",
+    "Event",
+    "EventTarget",
+    "FocusEvent",
+    "HtmlCanvasElement",
+    "HtmlElement",
+    "KeyboardEvent",
+    "MouseEvent",
+    "Touch",
+    "TouchEvent",
+    "TouchList",
+    "VisibilityState",
+    "WheelEvent",
+    "Window",
+] }
+
+# Android 后端：NativeActivity 胶水（android-activity 自身即 poll 风格）。
+[target.'cfg(target_os = "android")'.dependencies]
+android-activity = { version = "0.6", features = ["native-activity"] }
+
+# rwh 的 Web canvas 句柄类型（WebCanvasWindowHandle）需要 wasm-bindgen-0-2
+[target.'cfg(target_family = "wasm")'.dependencies]
+raw-window-handle = { version = "0.6", features = ["wasm-bindgen-0-2"] }
+
+# 仅测试用：验证 wgpu feature 的对接便捷性；不进入库的依赖树。
+[target.'cfg(windows)'.dev-dependencies]
+wgpu = "30.0.1"
+pollster = "1.0.1"
+
+# ── Android APK 打包配置（cargo apk build --features android-demo）──
+[package.metadata.android]
+package = "com.starfish.window_demo"
+apk_name = "starfish-demo"
+build_targets = ["aarch64-linux-android"]
+
+[package.metadata.android.application]
+# 启动预览窗口（starting window）按主题渲染：默认主题是老式带标题栏样式
+# （显示应用名标签），指定全屏无标题主题后预览为纯色全屏。
+theme = "@android:style/Theme.DeviceDefault.NoActionBar.Fullscreen"
+label = "Starfish Demo"
+
+[package.metadata.android.sdk]
+min_sdk_version = 24
+# 本机 SDK 只装了 android-37.0（junction 出 android-37 供 cargo-apk 识别）
+target_sdk_version = 37
