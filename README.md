@@ -74,6 +74,15 @@ cargo apk build --features android-demo       # Android demo APK (needs ANDROID_
 scripts/build_web.sh                          # Web packaging → testweb/
 ```
 
+### Run the Web demo
+
+```bash
+scripts/build_web.sh                          # build → wasm-bindgen → testweb/
+python -m http.server 8000 -d testweb         # serve the bundle
+# open http://localhost:8000 — events print on the page overlay and in the
+# browser console
+```
+
 ## License
 
 Dual-licensed, pick either:

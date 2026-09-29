@@ -65,6 +65,14 @@ cargo apk build --features android-demo       # Android 演示 APK（需 ANDROID
 scripts/build_web.sh                          # Web 打包 → testweb/
 ```
 
+### 运行 Web 演示
+
+```bash
+scripts/build_web.sh                          # 构建 → wasm-bindgen → testweb/
+python -m http.server 8000 -d testweb         # 伺服静态包
+# 浏览器打开 http://localhost:8000 —— 事件打印在页面覆盖层和控制台
+```
+
 ## 开源协议
 
 双协议，任选其一：
