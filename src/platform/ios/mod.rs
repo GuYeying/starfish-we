@@ -1,10 +1,21 @@
+//! iOS (UIKit) backend — not implemented yet.
 //! iOS (UIKit) 后端（待实现）。
 //!
+//! Plan: `objc2-ui-kit`. iOS has no freedom to create a window outside
+//! "main"; the lean is to skip `UIApplicationMain` and instantiate
+//! `UIApplication` + `UIWindow` manually, buffering touch / lifecycle
+//! events into a queue drained by `poll_event`:
+//! touch → `Event::Touch` (the primary finger also synthesizes mouse
+//! events), background / foreground → `Event::Suspended` /
+//! `Event::Resumed`.
 //! 计划：`objc2-ui-kit`。iOS 没有"main 之外建窗"的自由度，倾向不走
 //! `UIApplicationMain`，而是手动实例化 `UIApplication` + `UIWindow`，
 //! 把触摸 / 生命周期事件缓冲进队列供 `poll_event` 排空：
 //! 触摸 → `Event::Touch`（主手指同时合成鼠标事件），后台 / 回前台 →
 //! `Event::Suspended` / `Event::Resumed`。
+//! Note: the view's layer must be a `CAMetalLayer` (a wgpu requirement);
+//! specify layerClass when creating the view. The exact wiring (scene
+//! delegate / manual runloop tick) is decided at implementation time.
 //! 注意：view 的 layer 必须用 `CAMetalLayer`（wgpu 要求），建 view 时指定 layerClass。
 //! 具体接线（scene delegate / 手动 runloop tick）实现时定。
 
@@ -13,6 +24,7 @@ use crate::event::Event;
 use crate::handle::RawWindowHandle;
 use crate::window::WindowOptions;
 
+/// The UIKit platform window implementation.
 /// UIKit 平台窗口实现。
 pub(crate) struct WindowInner;
 
@@ -88,18 +100,23 @@ impl WindowInner {
     }
 
     pub(crate) fn poll_event(&mut self) -> Option<Event> {
-        None // TODO: 从事件缓冲队列排空
+        None // TODO: drain from the buffered event queue / 从事件缓冲队列排空
     }
 
     pub(crate) fn size(&self) -> (u32, u32) {
-        (0, 0) // TODO（物理像素，bounds * scale）
+        // TODO (physical pixels, bounds * scale / 物理像素，bounds * scale)
+        (0, 0)
     }
 
     pub(crate) fn set_title(&mut self, _title: &str) {
+        // iOS has no title-bar concept; map to the root view's accessible
+        // label or ignore entirely.
         // iOS 无标题栏概念；映射为顶层视图 accessible 标签或直接忽略
     }
 
     pub(crate) fn raw_handle(&self) -> RawWindowHandle {
-        unreachable!("该平台后端尚未实现，Window 不可能被构造")
+        unreachable!(
+            "backend not implemented for this platform; a Window cannot exist / 该平台后端尚未实现，Window 不可能被构造"
+        )
     }
 }

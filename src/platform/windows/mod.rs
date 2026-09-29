@@ -1,14 +1,31 @@
+//! Win32 backend.
 //! Win32 后端。
 //!
+//! Model: [`poll_event`](WindowInner::poll_event) drains this thread's
+//! messages non-blockingly with `PeekMessageW`; `DispatchMessageW` feeds
+//! [`wndproc`], which translates messages into the pending queue; one event
+//! is returned per call. Control flow always stays with the caller.
 //! 模型：[`poll_event`](WindowInner::poll_event) 用 `PeekMessageW` 非阻塞把
 //! 本线程消息泵干，`DispatchMessageW` → [`wndproc`] 翻译消息，再从待发队列
 //! 取一个返回。控制流始终在调用者手里。
 //!
+//! Conventions:
 //! 约定：
-//! - 尺寸 / 坐标均为物理像素（进程声明 Per-Monitor V2 DPI 感知）。
-//! - `TextInput` 走 `WM_CHAR` 直通，不接 IME 组合过程（首版约定）。
-//! - `WM_CLOSE` 不直接销毁窗口：是否销毁由用户 drop [`Window`](crate::Window) 决定。
+//! - Sizes / coordinates are physical pixels (the process declares
+//!   Per-Monitor V2 DPI awareness).
+//!   尺寸 / 坐标均为物理像素（进程声明 Per-Monitor V2 DPI 感知）。
+//! - `TextInput` goes through raw `WM_CHAR` passthrough; no IME
+//!   composition (first-version agreement).
+//!   `TextInput` 走 `WM_CHAR` 直通，不接 IME 组合过程（首版约定）。
+//! - `WM_CLOSE` does not destroy the window: destruction is decided by
+//!   dropping the [`Window`](crate::Window).
+//!   `WM_CLOSE` 不直接销毁窗口：是否销毁由用户 drop [`Window`](crate::Window) 决定。
 //!
+//! Layering: all message→event translation lives in [`translate`] (compiled
+//! only under the `event` feature); this module handles window creation,
+//! message pumping, state attachment and system-default fallback — so
+//! `--no-default-features --features window` (window without events) also
+//! holds.
 //! 分层：消息 → 事件的翻译全部在 [`translate`]（仅 `event` feature 编译）；
 //! 本模块只负责建窗、泵消息、状态挂载与系统默认兜底，因此
 //! `--no-default-features --features window`（仅建窗、无事件）同样成立。
@@ -38,48 +55,68 @@ use crate::event::Event;
 use crate::handle::RawWindowHandle;
 use crate::window::WindowOptions;
 
+/// The window class name; registered once per process.
 /// 窗口类名；进程内只注册一次。
 const CLASS_NAME: &str = "starfish-window";
 
 pub(crate) struct WindowInner {
     hwnd: HWND,
+    /// The state block shared with [`wndproc`] via `GWLP_USERDATA`
+    /// (boxed at creation, reclaimed in `Drop`).
     /// 经 `GWLP_USERDATA` 与 [`wndproc`] 共享的状态块（创建时 boxed，Drop 回收）。
     state: *mut WndState,
 }
 
+/// Per-window state shared by the window procedure and `poll_event`.
+/// Single window + Win32 thread affinity: no synchronization needed.
 /// 窗口过程与 `poll_event` 共享的每窗口状态。
 /// 单窗口 + Win32 窗口线程亲和，无需同步。
 struct WndState {
     hwnd: HWND,
     hinstance: HMODULE,
+    /// Last known client size (physical pixels).
     /// 最近一次已知客户区尺寸（物理像素）。
     size: (u32, u32),
+    /// Lower bound for user-driven client resizes.
     /// 用户拖拽调整的客户区尺寸下限。
     min_size: Option<(u32, u32)>,
+    /// Upper bound for user-driven client resizes.
     /// 用户拖拽调整的客户区尺寸上限。
     max_size: Option<(u32, u32)>,
+    /// Events translated by the wndproc, awaiting dispatch.
     /// wndproc 翻译出的待发事件。
     #[cfg(feature = "event")]
     pending: VecDeque<Event>,
+    /// Bitmask of held mouse buttons (see `translate::button_bit`),
+    /// driving `SetCapture` / `ReleaseCapture`.
     /// 按下中的鼠标键位掩码（见 `translate::button_bit`），
     /// 驱动 `SetCapture` / `ReleaseCapture`。
     #[cfg(feature = "event")]
     mouse_down: u8,
-    // ── 运行期窗口状态（SDL flag 语义的 Win32 落地）──
+    // ── Runtime window state (SDL flag semantics on Win32) /
+    //    运行期窗口状态（SDL flag 语义的 Win32 落地）──
+    /// In fullscreen (placement saved on entry for restoration).
     /// 全屏中（进入时保存 placement 供退出还原）。
     fullscreen: bool,
+    /// Window position and size before entering fullscreen.
     /// 进入全屏前的窗口位置与尺寸。
     saved_placement: Option<RECT>,
+    /// Cursor visible (`ShowCursor` is a counter; managed here as a single
+    /// show/hide by boolean).
     /// 光标可见（ShowCursor 为计数器，这里按布尔管理一次显/隐）。
     cursor_visible: bool,
+    /// Mouse confined to the window client area (`ClipCursor`).
     /// 鼠标被捕获在窗口客户区内（ClipCursor）。
     mouse_grabbed: bool,
+    /// Window opacity (1.0 = opaque; <1.0 requires `WS_EX_LAYERED`).
     /// 窗口不透明度（1.0 = 全不透明；<1.0 需 WS_EX_LAYERED）。
     opacity: f32,
 }
 
 impl WindowInner {
     pub(crate) fn new(options: &WindowOptions) -> Result<Self, WindowError> {
+        // SAFETY: every FFI call passes documented-valid parameters; the
+        // state block is reclaimed on all failure paths.
         // SAFETY: 各 FFI 调用均按文档传入有效参数；失败路径统一回收 state。
         unsafe { Self::create(options) }
     }
@@ -87,8 +124,12 @@ impl WindowInner {
     #[cfg(feature = "event")]
     pub(crate) fn poll_event(&mut self) -> Option<Event> {
         let state = self.state;
+        // SAFETY: state is valid for the window's lifetime and accessed
+        // only on this thread (Win32 thread affinity).
         // SAFETY: state 在窗口存活期内有效，且仅本线程访问（Win32 线程亲和）。
         unsafe {
+            // Drain this thread's message queue first; DispatchMessageW
+            // feeds wndproc which appends to `pending`.
             // 先把本线程消息泵干；DispatchMessageW 经 wndproc 写入 pending。
             loop {
                 let mut msg: wm::MSG = mem::zeroed();
@@ -96,10 +137,13 @@ impl WindowInner {
                     break;
                 }
                 if msg.message == wm::WM_QUIT {
+                    // Someone asked the message thread to quit: report as a
+                    // close request.
                     // 外部要求退出消息线程：按关闭请求上报。
                     (*state).pending.push_back(Event::CloseRequested);
                     continue;
                 }
+                // TranslateMessage produces WM_CHAR (the TextInput source).
                 // TranslateMessage 产出 WM_CHAR（TextInput 的来源）。
                 wm::TranslateMessage(&msg);
                 wm::DispatchMessageW(&msg);
@@ -109,12 +153,14 @@ impl WindowInner {
     }
 
     pub(crate) fn size(&self) -> (u32, u32) {
+        // SAFETY: state is valid for the window's lifetime, this-thread only.
         // SAFETY: state 在窗口存活期内有效，且仅本线程访问。
         unsafe { (*self.state).size }
     }
 
     pub(crate) fn set_title(&mut self, title: &str) {
         let title_w: Vec<u16> = title.encode_utf16().chain(once(0)).collect();
+        // SAFETY: title_w is NUL-terminated and outlives the call.
         // SAFETY: title_w 以 NUL 结尾，存活至调用返回。
         unsafe {
             wm::SetWindowTextW(self.hwnd, title_w.as_ptr());
@@ -122,6 +168,7 @@ impl WindowInner {
     }
 
     pub(crate) fn raw_handle(&self) -> RawWindowHandle {
+        // SAFETY: state is valid for the window's lifetime, this-thread only.
         // SAFETY: state 在窗口存活期内有效，且仅本线程访问。
         let state = unsafe { &*self.state };
         RawWindowHandle::Win32 {
@@ -130,9 +177,11 @@ impl WindowInner {
         }
     }
 
-    // ── 运行期窗口能力（SDL flag 语义的 Win32 落地）──────────────────
+    // ── Runtime window capabilities (SDL flag semantics on Win32) /
+    //    运行期窗口能力（SDL flag 语义的 Win32 落地）──────────────────
 
-    /// GWL_STYLE 读样式（WS_* 常量为 u32）
+    /// Reads `GWL_STYLE` (WS_* constants are u32).
+    /// GWL_STYLE 读样式（WS_* 常量为 u32）。
     fn style_raw(&self) -> u32 {
         // SAFETY: hwnd 在窗口存活期内有效。
         unsafe { wm::GetWindowLongW(self.hwnd, wm::GWL_STYLE) as u32 }
@@ -194,6 +243,7 @@ impl WindowInner {
                 });
                 state.fullscreen = true;
 
+                // Strip decorations + fill the current monitor.
                 // 去装饰 + 铺满所在显示器
                 let style = wm::GetWindowLongW(self.hwnd, wm::GWL_STYLE) as u32;
                 wm::SetWindowLongW(
@@ -294,10 +344,12 @@ impl WindowInner {
     }
 
     pub(crate) fn is_mouse_grabbed(&self) -> bool {
-        // SAFETY: state 有效。
+        // SAFETY: state is valid for the window's lifetime. / state 在窗口存活期内有效。
         unsafe { (*self.state).mouse_grabbed }
     }
 
+    /// Relative mouse mode, v0 approximation: clip + hide cursor (a true
+    /// raw-input mode awaits Raw Input integration).
     /// 相对鼠标模式 v0 近似：抓屏 + 隐藏光标（真·原始输入模式待接 Raw Input）。
     pub(crate) fn set_mouse_relative(&mut self, enable: bool) {
         self.set_mouse_grabbed(enable);
@@ -321,24 +373,24 @@ impl WindowInner {
     }
 
     pub(crate) fn is_cursor_visible(&self) -> bool {
-        // SAFETY: state 有效。
+        // SAFETY: state is valid for the window's lifetime. / state 在窗口存活期内有效。
         unsafe { (*self.state).cursor_visible }
     }
 
     pub(crate) fn set_visible(&self, visible: bool) {
-        // SAFETY: hwnd 有效。
+        // SAFETY: hwnd is valid for the window's lifetime. / hwnd 在窗口存活期内有效。
         unsafe {
             wm::ShowWindow(self.hwnd, if visible { wm::SW_SHOW } else { wm::SW_HIDE });
         }
     }
 
     pub(crate) fn is_visible(&self) -> bool {
-        // SAFETY: hwnd 有效。
+        // SAFETY: hwnd is valid for the window's lifetime. / hwnd 在窗口存活期内有效。
         unsafe { wm::IsWindowVisible(self.hwnd) != 0 }
     }
 
     pub(crate) fn set_always_on_top(&self, top: bool) {
-        // SAFETY: hwnd 有效。
+        // SAFETY: hwnd is valid for the window's lifetime. / hwnd 在窗口存活期内有效。
         unsafe {
             wm::SetWindowPos(
                 self.hwnd,
@@ -357,7 +409,7 @@ impl WindowInner {
     }
 
     pub(crate) fn is_always_on_top(&self) -> bool {
-        // SAFETY: hwnd 有效。
+        // SAFETY: hwnd is valid for the window's lifetime. / hwnd 在窗口存活期内有效。
         unsafe {
             let ex = wm::GetWindowLongW(self.hwnd, wm::GWL_EXSTYLE) as u32;
             (ex & wm::WS_EX_TOPMOST) != 0
@@ -365,28 +417,28 @@ impl WindowInner {
     }
 
     pub(crate) fn minimize(&self) {
-        // SAFETY: hwnd 有效。
+        // SAFETY: hwnd is valid for the window's lifetime. / hwnd 在窗口存活期内有效。
         unsafe {
             wm::ShowWindow(self.hwnd, wm::SW_MINIMIZE);
         }
     }
 
     pub(crate) fn maximize(&self) {
-        // SAFETY: hwnd 有效。
+        // SAFETY: hwnd is valid for the window's lifetime. / hwnd 在窗口存活期内有效。
         unsafe {
             wm::ShowWindow(self.hwnd, wm::SW_MAXIMIZE);
         }
     }
 
     pub(crate) fn restore(&self) {
-        // SAFETY: hwnd 有效。
+        // SAFETY: hwnd is valid for the window's lifetime. / hwnd 在窗口存活期内有效。
         unsafe {
             wm::ShowWindow(self.hwnd, wm::SW_RESTORE);
         }
     }
 
     pub(crate) fn raise(&self) {
-        // SAFETY: hwnd 有效。
+        // SAFETY: hwnd is valid for the window's lifetime. / hwnd 在窗口存活期内有效。
         unsafe {
             wm::SetWindowPos(
                 self.hwnd,
@@ -402,25 +454,29 @@ impl WindowInner {
     }
 
     pub(crate) fn is_minimized(&self) -> bool {
-        // SAFETY: hwnd 有效。
+        // SAFETY: hwnd is valid for the window's lifetime. / hwnd 在窗口存活期内有效。
         unsafe { wm::IsIconic(self.hwnd) != 0 }
     }
 
     pub(crate) fn is_maximized(&self) -> bool {
-        // SAFETY: hwnd 有效。
+        // SAFETY: hwnd is valid for the window's lifetime. / hwnd 在窗口存活期内有效。
         unsafe { wm::IsZoomed(self.hwnd) != 0 }
     }
 
     pub(crate) fn has_input_focus(&self) -> bool {
-        // SAFETY: hwnd 有效。
+        // SAFETY: hwnd is valid for the window's lifetime. / hwnd 在窗口存活期内有效。
         unsafe { wm::GetForegroundWindow() == self.hwnd }
     }
 
+    /// Occlusion query: no direct Win32 equivalent, always false (same
+    /// gap as SDL; documented).
     /// 遮挡查询：Win32 无直接等价，恒 false（SDL 同款差异，文档注明）。
     pub(crate) fn is_occluded(&self) -> bool {
         false
     }
 
+    /// Keyboard grab: no window-level Win32 equivalent (SetFocus is a
+    /// thread-scoped concept), always a no-op.
     /// 键盘抓取：Win32 无窗口级等价（SetFocus 为线程内概念），恒 no-op。
     pub(crate) fn set_keyboard_grabbed(&mut self, _grab: bool) {}
 
@@ -434,7 +490,7 @@ impl WindowInner {
     }
 
     pub(crate) fn set_position(&self, x: i32, y: i32) {
-        // SAFETY: hwnd 有效。
+        // SAFETY: hwnd is valid for the window's lifetime. / hwnd 在窗口存活期内有效。
         unsafe {
             wm::SetWindowPos(
                 self.hwnd,
@@ -448,7 +504,8 @@ impl WindowInner {
         }
     }
 
-    /// 居中于所在显示器工作区
+    /// Centers the window on its monitor's work area.
+    /// 居中于所在显示器工作区。
     pub(crate) fn center_on_screen(&mut self) {
         // SAFETY: hwnd 有效；MonitorFromWindow/GetMonitorInfoW 均为查询。
         unsafe {
@@ -509,17 +566,21 @@ impl WindowInner {
     }
 
     pub(crate) fn opacity(&self) -> f32 {
-        // SAFETY: state 有效。
+        // SAFETY: state is valid for the window's lifetime. / state 在窗口存活期内有效。
         unsafe { (*self.state).opacity }
     }
 
-    /// DPI 缩放比（Per-Monitor V2 感知下跟随所在显示器）
+    /// DPI scale factor (follows the current monitor under Per-Monitor V2
+    /// awareness).
+    /// DPI 缩放比（Per-Monitor V2 感知下跟随所在显示器）。
     pub(crate) fn dpi_scale(&self) -> f32 {
-        // SAFETY: hwnd 有效。
+        // SAFETY: hwnd is valid for the window's lifetime. / hwnd 在窗口存活期内有效。
         unsafe { hid::GetDpiForWindow(self.hwnd) as f32 / 96.0 }
     }
 
-    /// 高像素密度：进程声明 Per-Monitor V2，恒 true（SDL 同款 flag 语义）
+    /// High pixel density: the process declares Per-Monitor V2, so always
+    /// true (same flag semantics as SDL).
+    /// 高像素密度：进程声明 Per-Monitor V2，恒 true（SDL 同款 flag 语义）。
     pub(crate) fn high_pixel_density(&self) -> bool {
         true
     }
@@ -550,6 +611,11 @@ impl WindowInner {
     }
 }
 
+// SAFETY: `Sync` exists only to satisfy renderer bounds (wgpu's
+// `create_surface(&window)` and friends require shared references); they
+// only read handle values and never dereference window data. The methods
+// of this type remain bound to the creating thread (see `Window` docs) —
+// cross-thread calls violate the contract.
 // SAFETY: `Sync` 仅为满足渲染后端的 bound（wgpu `create_surface(&window)`
 // 等要求共享引用）；它们只读取句柄值，不解引用窗口数据。本类型的
 // 方法仍受创建线程约束（见 `Window` 文档），跨线程调用属违反契约。
@@ -557,6 +623,8 @@ unsafe impl Sync for WindowInner {}
 
 impl Drop for WindowInner {
     fn drop(&mut self) {
+        // SAFETY: hwnd / state are valid for the window's lifetime; destroy
+        // the window first, then reclaim the state block.
         // SAFETY: hwnd / state 均在窗口存活期内；先销毁窗口，再回收状态块。
         unsafe {
             wm::DestroyWindow(self.hwnd);
@@ -567,15 +635,18 @@ impl Drop for WindowInner {
 
 impl WindowInner {
     unsafe fn create(options: &WindowOptions) -> Result<Self, WindowError> {
+        // SAFETY: see the comments at each FFI call.
         // SAFETY: 见各 FFI 调用处注释。
         unsafe {
+            // Keep coordinates in physical pixels (Per-Monitor V2); failure
+            // usually means it was declared already — ignore.
             // 让坐标停留在物理像素（Per-Monitor V2）；失败多半是已声明过，忽略。
             let _ =
                 hid::SetProcessDpiAwarenessContext(hid::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
 
             let hinstance = lib::GetModuleHandleW(ptr::null());
             if hinstance.is_null() {
-                return Err(WindowError::OsError("GetModuleHandleW 失败".into()));
+                return Err(WindowError::OsError("GetModuleHandleW failed".into()));
             }
             Self::register_class_once(hinstance)?;
 
@@ -583,6 +654,9 @@ impl WindowInner {
             let title_w: Vec<u16> = options.title.encode_utf16().chain(once(0)).collect();
             let (width, height) = options.size;
 
+            // SDL flags → Win32 style bits: resizable = THICKFRAME +
+            // MAXIMIZEBOX; borderless = WS_POPUP (keep THICKFRAME for a
+            // resizable borderless edge).
             // SDL flag → Win32 样式位：resizable = THICKFRAME + MAXIMIZEBOX，
             // borderless = WS_POPUP（可拖边时保留 THICKFRAME）。
             let mut style = wm::WS_OVERLAPPEDWINDOW;
@@ -615,6 +689,8 @@ impl WindowInner {
                 opacity: 1.0,
             }));
 
+            // Client size → outer frame size, so the client area exactly
+            // equals the requested value.
             // 客户区 size → 外框尺寸，使客户区精确等于请求值。
             let mut rect = RECT {
                 left: 0,
@@ -625,11 +701,13 @@ impl WindowInner {
             if wm::AdjustWindowRectEx(&mut rect, style, 0, 0) == 0 {
                 drop(Box::from_raw(state));
                 return Err(WindowError::OsError(format!(
-                    "AdjustWindowRectEx 失败: {}",
+                    "AdjustWindowRectEx failed: {}",
                     GetLastError()
                 )));
             }
 
+            // lpCreateParams carries the state pointer; wndproc attaches it
+            // on WM_NCCREATE.
             // lpCreateParams 携带 state 指针，WM_NCCREATE 时由 wndproc 挂上窗口。
             let hwnd = wm::CreateWindowExW(
                 0,
@@ -648,12 +726,14 @@ impl WindowInner {
             if hwnd.is_null() {
                 drop(Box::from_raw(state));
                 return Err(WindowError::OsError(format!(
-                    "CreateWindowExW 失败: {}",
+                    "CreateWindowExW failed: {}",
                     GetLastError()
                 )));
             }
 
             if options.always_on_top {
+                // SAFETY: hwnd is valid; SWP_NOMOVE | SWP_NOSIZE make the
+                // remaining parameters ignored.
                 // SAFETY: hwnd 有效；SWP_NOMOVE | SWP_NOSIZE 使其余参数被忽略。
                 wm::SetWindowPos(
                     hwnd,
@@ -666,12 +746,16 @@ impl WindowInner {
                 );
             }
 
+            // HIDDEN flag: created but not shown yet (shown later via
+            // set_visible(true)).
             // HIDDEN flag：创建但先不显示（运行期 set_visible(true) 再上屏）。
             if !options.hidden {
                 wm::ShowWindow(hwnd, wm::SW_SHOW);
             }
             let mut this = Self { hwnd, state };
 
+            // Apply post-create flags (the runtime method family works
+            // directly on the creating thread).
             // post-create flag 应用（运行期方法族在创建线程上直接可用）
             if options
                 .flags
@@ -696,6 +780,8 @@ impl WindowInner {
     }
 
     unsafe fn register_class_once(hinstance: HMODULE) -> Result<(), WindowError> {
+        // SAFETY: all RegisterClassExW parameters are valid static /
+        // process-lifetime data.
         // SAFETY: RegisterClassExW 参数均为有效静态/进程级数据。
         unsafe {
             static REGISTERED: AtomicBool = AtomicBool::new(false);
@@ -712,6 +798,8 @@ impl WindowInner {
                 hInstance: hinstance,
                 hIcon: ptr::null_mut(),
                 hCursor: ptr::null_mut(),
+                // No background erasing: rendering is the user's job (wgpu
+                // surface); avoids flicker at creation.
                 // 不擦背景：渲染由用户负责（wgpu surface），避免建窗闪烁。
                 hbrBackground: ptr::null_mut(),
                 lpszMenuName: ptr::null(),
@@ -721,7 +809,7 @@ impl WindowInner {
             if wm::RegisterClassExW(&wc) == 0 {
                 REGISTERED.store(false, Ordering::Relaxed);
                 return Err(WindowError::OsError(format!(
-                    "RegisterClassExW 失败: {}",
+                    "RegisterClassExW failed: {}",
                     GetLastError()
                 )));
             }
@@ -730,12 +818,19 @@ impl WindowInner {
     }
 }
 
+/// The window procedure: state attachment + size cache + event translation
+/// (see [`translate`]) + system-default fallback. Same thread as
+/// `poll_event`.
 /// 窗口过程：状态挂载 + 尺寸缓存 + 事件翻译（见 [`translate`]）+ 系统默认兜底。
 /// 与 `poll_event` 同线程。
 unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: LPARAM) -> LRESULT {
+    // SAFETY: every FFI call's parameters come from the system callback
+    // itself; hwnd is valid for the duration of the callback.
     // SAFETY: 所有 FFI 调用的参数均来自系统回调本身，hwnd 在回调期内有效。
     unsafe {
         if msg == wm::WM_NCCREATE {
+            // CREATESTRUCTW.lpCreateParams is the state pointer we passed
+            // in; attach it to the window.
             // CREATESTRUCTW.lpCreateParams 是我们传入的 state 指针，挂到窗口上。
             let cs = &*(lparam as *const wm::CREATESTRUCTW);
             let state = cs.lpCreateParams as *mut WndState;
@@ -745,16 +840,22 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
         let state = wm::GetWindowLongPtrW(hwnd, wm::GWLP_USERDATA) as *mut WndState;
         if state.is_null() {
+            // Messages before NCCREATE (e.g. WM_GETMINMAXINFO): no state
+            // available yet.
             // NCCREATE 之前的消息（如 WM_GETMINMAXINFO）：尚无状态可用。
             return wm::DefWindowProcW(hwnd, msg, wparam, lparam);
         }
         let state = &mut *state;
 
+        // The size cache is always maintained (size() must be correct even
+        // in window-only builds).
         // 尺寸缓存始终维护（仅 window、无事件时 size() 也要正确）。
         if msg == wm::WM_SIZE {
             cache_size(state, wparam, lparam);
         }
 
+        // Event translation: Some = handled, return the result to the
+        // system directly.
         // 事件翻译：返回 Some 即已处理，直接把结果交还系统。
         #[cfg(feature = "event")]
         if let Some(result) = translate::handle_message(state, hwnd, msg, wparam, lparam) {
@@ -762,8 +863,12 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         }
 
         match msg {
+            // Destruction is decided by the user dropping the Window; only
+            // the system default destruction is intercepted here.
             // 是否销毁由用户 drop Window 决定；这里只拦下系统默认销毁。
             wm::WM_CLOSE => 0,
+            // Size-range constraints for user-driven resizes (builder's
+            // min_size / max_size).
             // 用户拖拽调整的尺寸范围约束（builder 的 min_size / max_size）。
             wm::WM_GETMINMAXINFO => {
                 let mmi = &mut *(lparam as *mut wm::MINMAXINFO);
@@ -786,6 +891,8 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
     }
 }
 
+/// Extracts the client size from `WM_SIZE`'s lParam into the cache (not
+/// updated while minimized).
 /// 从 `WM_SIZE` 的 lParam 提取客户区尺寸写入缓存（最小化时不更新）。
 fn cache_size(state: &mut WndState, wparam: WPARAM, lparam: LPARAM) {
     let width = (lparam & 0xFFFF) as u16 as u32;

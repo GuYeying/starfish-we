@@ -1,5 +1,10 @@
+//! Linux backend — not implemented yet (target distribution: Ubuntu).
 //! Linux 后端（待实现，目标发行版 Ubuntu）。
 //!
+//! Plan: X11 first (`x11rb` or raw Xlib FFI), Wayland later — at that
+//! point this directory splits horizontally into `x11` / `wayland`
+//! submodules with runtime windowing-system detection.
+//! `target_os = "linux"` maps to this module as a whole.
 //! 计划：先做 X11（`x11rb` 或裸 Xlib FFI），Wayland 后续再加——
 //! 届时在本目录下横向拆 `x11` / `wayland` 子模块，运行时探测窗口系统选择。
 //! `target_os = "linux"` 整体对应本模块。
@@ -9,6 +14,7 @@ use crate::event::Event;
 use crate::handle::RawWindowHandle;
 use crate::window::WindowOptions;
 
+/// The Linux platform window implementation (X11 first).
 /// Linux 平台窗口实现（X11 先行）。
 pub(crate) struct WindowInner;
 
@@ -84,7 +90,7 @@ impl WindowInner {
     }
 
     pub(crate) fn poll_event(&mut self) -> Option<Event> {
-        None // TODO: XPending 非阻塞泵 + KeySym 翻译
+        None // TODO: non-blocking XPending pump + KeySym translation / XPending 非阻塞泵 + KeySym 翻译
     }
 
     pub(crate) fn size(&self) -> (u32, u32) {
@@ -92,10 +98,12 @@ impl WindowInner {
     }
 
     pub(crate) fn set_title(&mut self, _title: &str) {
-        // TODO: XStoreName / _NET_WM_NAME（UTF-8）
+        // TODO: XStoreName / _NET_WM_NAME (UTF-8)
     }
 
     pub(crate) fn raw_handle(&self) -> RawWindowHandle {
-        unreachable!("该平台后端尚未实现，Window 不可能被构造")
+        unreachable!(
+            "backend not implemented for this platform; a Window cannot exist / 该平台后端尚未实现，Window 不可能被构造"
+        )
     }
 }

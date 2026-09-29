@@ -1,19 +1,40 @@
+//! Android (NativeActivity) backend.
 //! Android (NativeActivity) 后端。
 //!
+//! Android's entry point and lifecycle are system-driven — the inverse of
+//! this crate's poll model. After [`android_init`] wires up the system
+//! callbacks, [`poll_event`](WindowInner::poll_event) pumps one round of
+//! `AndroidApp::poll_events` per call (timeout = 0, non-blocking),
+//! **translating** lifecycle / input events into a buffer queue and
+//! popping one from the head — the "callbacks write, poll drains"
+//! inversion device.
 //! Android 的入口与生命周期由系统驱动，与本 crate 的 poll 模型相反：
 //! [`android_init`] 装配系统回调后，[`poll_event`](WindowInner::poll_event)
 //! 在每次调用时泵一轮 `AndroidApp::poll_events`（timeout=0 非阻塞），
 //! 把生命周期 / 输入事件**翻译进缓冲队列**再从队头取一个——即"回调写入、
 //! poll 排空"的反转装置。
 //!
+//! Conventions (matching the public docs):
 //! 约定（与公共文档一致）：
-//! - 坐标 / 尺寸为物理像素（ANativeWindow 坐标即物理像素）。
-//! - 触摸 → `Event::Touch`，主手指（pointer id 0）同时合成鼠标事件。
-//! - 生命周期：`Pause`/`Stop`/`TerminateWindow` → `Suspended`，
+//! - Sizes / coordinates are physical pixels (ANativeWindow coordinates
+//!   are physical pixels).
+//!   坐标 / 尺寸为物理像素（ANativeWindow 坐标即物理像素）。
+//! - Touch → `Event::Touch`, with the primary finger simultaneously
+//!   synthesized into mouse events.
+//!   触摸 → `Event::Touch`，主手指（pointer id 0）同时合成鼠标事件。
+//! - Lifecycle: `Pause`/`Stop`/`TerminateWindow` → `Suspended`,
+//!   `Resume` → `Resumed`, `Destroy` → `CloseRequested`.
+//!   生命周期：`Pause`/`Stop`/`TerminateWindow` → `Suspended`，
 //!   `Resume` → `Resumed`，`Destroy` → `CloseRequested`。
-//! - 返回键（`Keycode::Back`）→ `CloseRequested`（Android 应用惯例）。
-//! - `TextInput` 来自系统 IME 的提交文本（`InputEvent::TextEvent`）。
+//! - The back key (`Keycode::Back`) → `CloseRequested` (Android app
+//!   convention).
+//!   返回键（`Keycode::Back`）→ `CloseRequested`（Android 应用惯例）。
+//! - `TextInput` comes from the system IME's committed text
+//!   (`InputEvent::TextEvent`).
+//!   `TextInput` 来自系统 IME 的提交文本（`InputEvent::TextEvent`）。
 //!
+//! All calls (`Window::new` / `poll_event`) must happen on the
+//! `android_main` thread (android-activity asserts this in `poll_events`).
 //! 所有调用（`Window::new` / `poll_event`）必须在 `android_main` 线程
 //! （android-activity 的 `poll_events` 有此要求）。
 
@@ -22,10 +43,10 @@ use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 
+pub(crate) mod entry;
+
 use android_activity::input::{InputEvent, KeyAction, Keycode, MotionAction};
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
-
-pub(crate) mod entry;
 
 use crate::error::WindowError;
 #[cfg(feature = "event")]
@@ -33,8 +54,16 @@ use crate::event::{Event, KeyCode, Modifiers, MouseButton, TouchPhase};
 use crate::handle::RawWindowHandle;
 use crate::window::WindowOptions;
 
+/// The app handle wired up by `android_main`.
 /// `android_main` 装配进来的 app 句柄。
 ///
+/// Contract: Android caches processes — "back" only destroys the Activity
+/// while the process survives; on the next launch `android_main` runs
+/// again **in the same process, on a new thread**. This slot must
+/// therefore be updated by overwrite: with a `OnceLock`, the second
+/// `android_init` would be silently ignored and every later call would
+/// land on the previous run's destroyed app/looper — a crash on relaunch
+/// (android-activity's poll thread assertion panics).
 /// 契约：Android 会缓存进程——用户"返回"只销毁 Activity，进程存活；
 /// 再次启动时 `android_main` 会在**同一进程、新线程**上再次执行。
 /// 因此这里必须覆盖式更新：用 `OnceLock` 的话第二次装配被静默忽略，
@@ -42,24 +71,38 @@ use crate::window::WindowOptions;
 /// （android-activity 的 poll 线程断言直接 panic）。
 static APP: Mutex<Option<AndroidApp>> = Mutex::new(None);
 
+/// Events translated from platform callbacks (single window; process-wide
+/// buffer).
 /// 平台回调翻译出的待发事件（单窗口，进程级缓冲）。
 #[cfg(feature = "event")]
 static PENDING: Mutex<VecDeque<Event>> = Mutex::new(VecDeque::new());
 
+/// Whether this run has seen `InitWindow` (surface ready).
 /// 本次运行是否已见过 `InitWindow`（surface 就绪）。
 ///
+/// Used to drop the **previous instance's cross-talk**: a late `onDestroy`
+/// from the old activity can land in the new instance's event stream;
+/// translating it as-is yields a `CloseRequested`, presenting as "the app
+/// exits immediately on relaunch".
 /// 用于丢弃进程复用时的**旧实例串扰**：上一实例的 onDestroy 可能晚到、
 /// 落进新实例的事件流，若照单全收会被翻译成 `CloseRequested`，
 /// 表现为"再次启动秒退"。
 #[cfg(feature = "event")]
 static WINDOW_READY: AtomicBool = AtomicBool::new(false);
 
+/// Called by the host in `android_main` to wire up the system callbacks.
 /// 宿主在 `android_main` 里调用，装配系统回调。
 ///
+/// Supports multiple calls within one process (when the process is cached
+/// and reused, `android_main` runs a second time): overwrites the old app,
+/// clears the previous run's buffered events and resets the readiness
+/// flag.
 /// 支持同进程内多次调用（进程被系统缓存复用时，`android_main` 会二次
 /// 执行）：覆盖旧 app、清空上次运行遗留的事件缓冲、重置就绪标记。
 pub fn android_init(app: AndroidApp) {
-    *APP.lock().expect("APP 锁中毒") = Some(app);
+    *APP.lock().expect("APP lock poisoned / APP 锁中毒") = Some(app);
+    // The single-window slot is counted per "run": during the overlap the
+    // previous instance may still hold the slot.
     // 单窗口占位按"运行"计算：交叠期内上一实例可能还占着位子。
     crate::window::reset_single_window_slot();
     #[cfg(feature = "event")]
@@ -74,24 +117,29 @@ pub(crate) struct WindowInner;
 impl WindowInner {
     pub(crate) fn new(options: &WindowOptions) -> Result<Self, WindowError> {
         let app = app_handle()?;
+        // NativeActivity's surface only exists after `InitWindow`: block
+        // and wait (the android_main thread may block), capped at 10 s.
         // NativeActivity 的 surface 在 `InitWindow` 之后才存在：
         // 阻塞等待（android_main 线程允许阻塞），上限 10 秒。
         let deadline = std::time::Instant::now() + Duration::from_secs(10);
         while app.native_window().is_none() {
             if std::time::Instant::now() > deadline {
                 return Err(WindowError::OsError(
-                    "等待 Android surface 超时（10s）：窗口未获得 InitWindow".into(),
+                    "timed out waiting for the Android surface (10s): no InitWindow".into(),
                 ));
             }
             app.poll_events(Some(Duration::from_millis(50)), |_| {});
         }
-        let _ = options; // 尺寸由系统 surface 决定；标题/边框等概念不适用于 Android
+        let _ = options; // Size comes from the system surface; title/frame concepts do not apply to Android
         Ok(Self)
     }
 
     #[cfg(feature = "event")]
     pub(crate) fn poll_event(&mut self) -> Option<Event> {
         let app = app_handle().ok()?;
+        // Poison-tolerant lock: recover the queue after a concurrent panic
+        // (e.g. the thread assertion during process-reuse overlap) instead
+        // of cascading — during overlap the new instance takes over anyway.
         // 锁中毒容错：并发 panic（如进程复用交叠期的线程断言）后恢复队列
         // 并清空，不连环爆——交叠期本就该由新实例接管。
         let mut queue = PENDING.lock().unwrap_or_else(|poisoned| {
@@ -100,6 +148,7 @@ impl WindowInner {
             queue
         });
 
+        // 1) Pump lifecycle events (non-blocking).
         // 1) 泵生命周期事件（非阻塞）。
         app.poll_events(Some(Duration::ZERO), |poll_event| {
             if let PollEvent::Main(main) = poll_event {
@@ -107,6 +156,8 @@ impl WindowInner {
             }
         });
 
+        // 2) Pump input events (android-activity's callback-style input
+        //    iterator).
         // 2) 泵输入事件（android-activity 的输入迭代器，回调式消费）。
         if let Ok(mut iter) = app.input_events_iter() {
             while iter.next(|event| {
@@ -123,10 +174,15 @@ impl WindowInner {
     }
 
     pub(crate) fn set_title(&mut self, _title: &str) {
+        // Android has no window-title concept; ignored.
         // Android 无窗口标题概念，忽略
     }
 
-    // ── 运行期窗口能力（Android 平台矩阵）────────────────────────
+    // ── Runtime window capabilities (the Android support matrix) /
+    //    运行期窗口能力（Android 平台矩阵）────────────────────────
+    // Naturally fullscreen (follows the system surface); window-decoration
+    // concepts like NOFRAME / ALWAYS_ON_TOP / min-max do not apply to
+    // Android — the corresponding methods are warn-once no-ops.
     // 天然全屏（跟随系统 surface）；NOFRAME/ALWAYS_ON_TOP/min-max 等
     // 窗口装饰概念不适用于 Android——对应方法 warn-once no-op。
     pub(crate) fn set_resizable(&mut self, _resizable: bool) {}
@@ -196,6 +252,9 @@ impl WindowInner {
     }
 
     pub(crate) fn raw_handle(&self) -> RawWindowHandle {
+        // Returns a null pointer while the surface is absent (reclaimed in
+        // the background); callers should only hand it to a rendering
+        // backend while `Resumed`.
         // surface 不在时（后台被回收）返回空指针；调用方应仅在
         // `Resumed` 状态下向渲染后端传递。
         let ptr = app_handle()
@@ -209,13 +268,16 @@ impl WindowInner {
     }
 }
 
+/// The current app (cheap Arc clone); errors when not wired up yet.
 /// 当前 app（Arc 克隆，廉价）；未装配时报错。
 fn app_handle() -> Result<AndroidApp, WindowError> {
     APP.lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .clone()
         .ok_or_else(|| {
-            WindowError::OsError("未调用 android_init（宿主需在 android_main 中装配）".into())
+            WindowError::OsError(
+                "android_init was not called (the host must wire it up in android_main)".into(),
+            )
         })
 }
 
@@ -224,11 +286,14 @@ fn native_window_size() -> Option<(u32, u32)> {
     Some((window.width() as u32, window.height() as u32))
 }
 
+/// Lifecycle event translation.
 /// 生命周期事件翻译。
 #[cfg(feature = "event")]
 fn translate_main(app: &AndroidApp, main: MainEvent<'_>, queue: &mut VecDeque<Event>) {
     use Event as E;
     match main {
+        // Surface ready / reclaimed: the signal for when to rebuild the
+        // wgpu surface.
         // surface 就绪 / 回收：这是 wgpu surface 重建的时机信号。
         MainEvent::InitWindow { .. } => {
             WINDOW_READY.store(true, Ordering::Release);
@@ -249,6 +314,10 @@ fn translate_main(app: &AndroidApp, main: MainEvent<'_>, queue: &mut VecDeque<Ev
         MainEvent::LostFocus => queue.push_back(E::FocusLost),
         MainEvent::Resume { .. } => queue.push_back(E::Resumed),
         MainEvent::Pause | MainEvent::Stop => queue.push_back(E::Suspended),
+        // A Destroy received before readiness is necessarily cross-talk
+        // from the previous instance (a normal destroy always happens
+        // after InitWindow); drop it to prevent "instant exit on
+        // relaunch".
         // 就绪前收到的 Destroy 必然是上一实例的串扰（正常销毁一定发生在
         // InitWindow 之后），丢弃以防"再次启动秒退"。
         MainEvent::Destroy => {
@@ -256,6 +325,8 @@ fn translate_main(app: &AndroidApp, main: MainEvent<'_>, queue: &mut VecDeque<Ev
                 queue.push_back(E::CloseRequested);
             }
         }
+        // Start/SaveState/ConfigChanged/LowMemory/ContentRectChanged/
+        // InsetsChanged: ignored in the first version.
         // Start/SaveState/ConfigChanged/LowMemory/ContentRectChanged/InsetsChanged：首版忽略
         _ => {
             let _ = app;
@@ -263,6 +334,8 @@ fn translate_main(app: &AndroidApp, main: MainEvent<'_>, queue: &mut VecDeque<Ev
     }
 }
 
+/// Input event translation: touch (with primary-finger mouse synthesis)
+/// and keys / IME text.
 /// 输入事件翻译：触摸（含主手指合成鼠标）与按键 / IME 文本。
 #[cfg(feature = "event")]
 fn translate_input(queue: &mut VecDeque<Event>, event: &InputEvent<'_>) {
@@ -274,6 +347,8 @@ fn translate_input(queue: &mut VecDeque<Event>, event: &InputEvent<'_>) {
                 MotionAction::Move => TouchPhase::Moved,
                 MotionAction::Up | MotionAction::PointerUp => TouchPhase::Ended,
                 MotionAction::Cancel => TouchPhase::Cancelled,
+                // Hover / Scroll / ButtonPress etc.: ignored in the first
+                // version.
                 // Hover / Scroll / ButtonPress 等：首版忽略
                 _ => return,
             };
@@ -286,6 +361,8 @@ fn translate_input(queue: &mut VecDeque<Event>, event: &InputEvent<'_>) {
                     x,
                     y,
                 });
+                // The primary finger (id 0) is synthesized into mouse
+                // events (SDL convention).
                 // 主手指（id 0）合成鼠标事件（SDL 惯例）。
                 if pointer.pointer_id() == 0 {
                     let mouse = match phase {
@@ -303,6 +380,7 @@ fn translate_input(queue: &mut VecDeque<Event>, event: &InputEvent<'_>) {
         }
         InputEvent::KeyEvent(key) => {
             let keycode = key.key_code();
+            // Back = close request (Android app convention).
             // 返回键 = 关闭请求（Android 应用惯例）。
             if keycode == Keycode::Back {
                 if key.action() == KeyAction::Down {
@@ -326,6 +404,8 @@ fn translate_input(queue: &mut VecDeque<Event>, event: &InputEvent<'_>) {
                     key: keycode_to_keycode(keycode),
                     modifiers,
                 },
+                // Multiple (long-press auto-repeat): treated as one KeyDown
+                // with repeat = true.
                 // Multiple（长按连发）：按一次带 repeat 的 KeyDown 处理
                 KeyAction::Multiple | _ => E::KeyDown {
                     key: keycode_to_keycode(keycode),
@@ -335,6 +415,7 @@ fn translate_input(queue: &mut VecDeque<Event>, event: &InputEvent<'_>) {
             };
             queue.push_back(key_event);
         }
+        // Final text committed by the system IME.
         // 系统 IME 提交的最终文本。
         InputEvent::TextEvent(state) => {
             if !state.text.is_empty() {
@@ -343,11 +424,15 @@ fn translate_input(queue: &mut VecDeque<Event>, event: &InputEvent<'_>) {
                 });
             }
         }
+        // TextAction (IME action keys): ignored in the first version.
         // TextAction（IME 动作键）：首版忽略
         _ => {}
     }
 }
 
+/// Android `Keycode` → [`KeyCode`]: ranges + item-by-item mapping;
+/// unrecognized keys become [`KeyCode::Other`] (carrying the native
+/// AKEYCODE value) so no key is lost.
 /// Android `Keycode` → [`KeyCode`]：区间 + 逐项映射，未识别包成
 /// [`KeyCode::Other`]（携带 AKEYCODE 原生值），不丢按键。
 #[cfg(feature = "event")]

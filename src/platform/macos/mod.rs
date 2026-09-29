@@ -1,8 +1,15 @@
+//! macOS (AppKit) backend — not implemented yet.
 //! macOS (AppKit) 后端（待实现）。
 //!
+//! Plan: `objc2` + `objc2-app-kit`. The first `Window::new` initializes
+//! `NSApplication` (`NSApplicationActivationPolicy::Regular`) and creates
+//! the `NSWindow`; `poll_event` pumps events non-blockingly via
+//! `nextEventMatchingMask:untilDate:inMode:dequeue:`.
 //! 计划：`objc2` + `objc2-app-kit`。首次 `Window::new` 时初始化 `NSApplication`
 //! （`NSApplicationActivationPolicy::Regular`），建 `NSWindow`；
 //! `poll_event` 内用 `nextEventMatchingMask:untilDate:inMode:dequeue:` 非阻塞泵事件。
+//! Hard constraint: all calls must happen on the main thread (an AppKit
+//! requirement) — already documented in the public API.
 //! 硬约束：所有调用必须在主线程（AppKit 要求），已写入公共 API 文档。
 
 use crate::error::WindowError;
@@ -10,6 +17,7 @@ use crate::event::Event;
 use crate::handle::RawWindowHandle;
 use crate::window::WindowOptions;
 
+/// The AppKit platform window implementation.
 /// AppKit 平台窗口实现。
 pub(crate) struct WindowInner;
 
@@ -85,10 +93,11 @@ impl WindowInner {
     }
 
     pub(crate) fn poll_event(&mut self) -> Option<Event> {
-        None // TODO: NSEvent 泵 + 翻译
+        None // TODO: NSEvent pump + translation / NSEvent 泵 + 翻译
     }
 
     pub(crate) fn size(&self) -> (u32, u32) {
+        // TODO: mind backingScaleFactor vs the physical-pixel convention
         (0, 0) // TODO（注意 backingscaled 与物理像素约定）
     }
 
@@ -97,6 +106,8 @@ impl WindowInner {
     }
 
     pub(crate) fn raw_handle(&self) -> RawWindowHandle {
-        unreachable!("该平台后端尚未实现，Window 不可能被构造")
+        unreachable!(
+            "backend not implemented for this platform; a Window cannot exist / 该平台后端尚未实现，Window 不可能被构造"
+        )
     }
 }

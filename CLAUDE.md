@@ -2,8 +2,10 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
-> **对接/使用本库**：先读《wgpu接入指南.md》（API 全表、事件语义矩阵、
-> 各平台驱动原理、wgpu 对接契约、红线清单、诊断速查）。本文聚焦仓库工程约定。
+> **对接/使用本库**：先读《reference/wgpu接入指南.md》（API 全表、事件语义矩阵、
+> 各平台驱动原理、wgpu 对接契约、红线清单、诊断速查；英文版
+> reference/wgpu-integration-guide.md）。代码注释为英/中双语（英前中后）。
+> 本文聚焦仓库工程约定。
 
 ## 项目定位
 

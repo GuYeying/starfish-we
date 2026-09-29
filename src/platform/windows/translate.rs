@@ -1,5 +1,11 @@
+//! Platform message → [`Event`] translation (compiled only under the
+//! `event` feature).
 //! 平台消息 → [`Event`] 翻译（仅 `event` feature 编译）。
 //!
+//! [`handle_message`] is called by the parent module's wndproc:
+//! `Some(LRESULT)` means handled (wndproc returns that result directly),
+//! `None` falls back to default system processing. Private fields of the
+//! parent's `WndState` are visible to this child module.
 //! [`handle_message`] 由父模块的 wndproc 调用：返回 `Some(LRESULT)` 表示
 //! 已处理（wndproc 直接返回该结果），`None` 表示回落到系统默认处理。
 //! 父模块 `WndState` 的私有字段对本子模块可见。
@@ -14,9 +20,15 @@ use windows_sys::Win32::UI::WindowsAndMessaging as wm;
 use super::WndState;
 use crate::event::{Event, KeyCode, Modifiers, MouseButton};
 
+/// Virtual key code → [`KeyCode`]: letters / digits / F-keys / numpad
+/// digits go through ranges + constant tables, the rest map item by item;
+/// unrecognized keys become [`KeyCode::Other`] (carrying the native VK
+/// code) so no event is lost.
 /// 虚拟键码 → [`KeyCode`]：字母 / 数字 / F 键 / 小键盘数字用区间 + 常量表，
 /// 其余逐项映射；未识别的键包成 [`KeyCode::Other`]（携带原生 VK 码），不丢事件。
 pub(super) fn vk_to_keycode(vk: u32) -> KeyCode {
+    // windows-sys's VK_* constants are u16; a VK code only occupies the
+    // low 16 bits.
     // windows-sys 的 VK_* 常量是 u16；VK 码只占低 16 位。
     let vk = vk as u16;
     match vk {
@@ -26,6 +38,8 @@ pub(super) fn vk_to_keycode(vk: u32) -> KeyCode {
         0x60..=0x69 => NUMPAD[(vk - 0x60) as usize],
         km::VK_BACK => KeyCode::Backspace,
         km::VK_TAB => KeyCode::Tab,
+        // Numpad Enter is not distinguished (lparam extended bit); mapped
+        // to Enter uniformly in the first version.
         // 小键盘 Enter 不区分（lparam 扩展位），首版统一映射 Enter。
         km::VK_RETURN => KeyCode::Enter,
         km::VK_ESCAPE => KeyCode::Escape,
@@ -116,6 +130,7 @@ const DIGITS: [KeyCode; 10] = [
     KeyCode::Digit9,
 ];
 
+// VK_F1 (0x70) … VK_F12 (0x7B) are a contiguous range.
 // VK_F1 (0x70) … VK_F12 (0x7B) 连续区间。
 const FKEYS: [KeyCode; 12] = [
     KeyCode::F1,
@@ -146,6 +161,7 @@ const NUMPAD: [KeyCode; 10] = [
     KeyCode::Numpad9,
 ];
 
+/// Translates one window message; `Some` = handled.
 /// 翻译一条窗口消息；`Some` = 已处理。
 pub(super) fn handle_message(
     state: &mut WndState,
@@ -155,6 +171,8 @@ pub(super) fn handle_message(
     lparam: LPARAM,
 ) -> Option<LRESULT> {
     match msg {
+        // Destruction is decided by the user dropping the Window; only the
+        // intent is reported here.
         // 是否销毁由用户 drop Window 决定；这里只上报意图。
         wm::WM_CLOSE => {
             state.push(Event::CloseRequested);
@@ -169,7 +187,11 @@ pub(super) fn handle_message(
             Some(0)
         }
         wm::WM_PAINT => {
+            // Validate the invalid region (we have no GDI content) and hand
+            // the redraw timing to the user.
             // 校验无效区（我们没有 GDI 内容），并把重绘时机交给用户。
+            // SAFETY: hwnd comes from the system callback; ps is a local of
+            // this function.
             // SAFETY: hwnd 来自系统回调，ps 为本函数局部变量。
             unsafe {
                 let mut ps: gdi::PAINTSTRUCT = mem::zeroed();
@@ -190,6 +212,10 @@ pub(super) fn handle_message(
             Some(0)
         }
         wm::WM_CHAR => {
+            // UTF-16 unit passthrough: control characters are skipped (Tab
+            // kept); surrogate pair units fail char::from_u32 and are
+            // dropped automatically (supplementary-plane characters are not
+            // supported in the first version).
             // UTF-16 单元直通：跳过控制字符（保留 Tab）；代理对单元来自
             // char::from_u32 失败自动丢弃（补充平面字符首版不支持）。
             if let Some(ch) = char::from_u32(wparam as u32) {
@@ -210,6 +236,8 @@ pub(super) fn handle_message(
                 modifiers: current_modifiers(),
                 repeat,
             });
+            // Hand back to the system: Alt+F4 → WM_CLOSE, menu mnemonics
+            // and friends keep their default behavior.
             // 交给系统：Alt+F4 → WM_CLOSE、菜单助记符等保持默认行为。
             None
         }
@@ -290,6 +318,8 @@ impl WndState {
         let was_up = self.mouse_down & bit == 0;
         self.mouse_down |= bit;
         if was_up {
+            // SAFETY: hwnd is valid (the message comes from it); drags
+            // outside the window keep producing move events.
             // SAFETY: hwnd 有效（消息正来自它）；拖拽出窗口仍能收到移动事件。
             unsafe { SetCapture(self.hwnd) };
         }
@@ -299,6 +329,7 @@ impl WndState {
     pub(super) fn mouse_release(&mut self, button: MouseButton) {
         self.mouse_down &= !button_bit(button);
         if self.mouse_down == 0 {
+            // SAFETY: paired with the SetCapture in mouse_press.
             // SAFETY: 与 mouse_press 中的 SetCapture 配对。
             unsafe { ReleaseCapture() };
         }
@@ -322,9 +353,12 @@ fn xbutton(wparam: WPARAM) -> MouseButton {
     }
 }
 
+/// Modifier state is taken from the message-queue state at the time of the
+/// message (`GetKeyState` semantics).
 /// 修饰键状态取自消息时刻的消息队列状态（`GetKeyState` 语义）。
 fn current_modifiers() -> Modifiers {
     fn down(vk: i32) -> bool {
+        // SAFETY: VK_* are all valid virtual key codes.
         // SAFETY: VK_* 均为合法虚拟键码。
         unsafe { km::GetKeyState(vk) as u16 & 0x8000 != 0 }
     }

@@ -1,11 +1,25 @@
+//! Web (wasm32-unknown-unknown) backend.
 //! Web (wasm32-unknown-unknown) 后端。
 //!
+//! The browser is callback-driven — the inverse of the poll model: DOM
+//! event listeners **buffer events into a queue** and `poll_event` drains
+//! it; the main loop's pacing is driven by the caller (interpreter tick /
+//! `setTimeout`). A `requestAnimationFrame` loop only sets a redraw flag
+//! (coalesced, never accumulated) so wgpu users poll exactly one
+//! `RedrawRequested` per frame.
 //! 浏览器是回调驱动的，与 poll 模型相反：DOM 事件监听器把事件
 //! **缓冲进队列**，`poll_event` 排空；主循环节奏由调用者驱动
 //! （解释器 tick / `setTimeout`）。`requestAnimationFrame` 循环只置
 //! 一个重绘标志（合并，不堆积），使 wgpu 用户每帧轮询到一次
 //! `RedrawRequested`。
 //!
+//! The window entity is a `<canvas>`: looked up by id `starfish-window`,
+//! else the page's first canvas, otherwise one is created filling the
+//! page. Coordinates are converted to physical pixels via
+//! `devicePixelRatio` (same convention as desktop). Keys follow the W3C
+//! `KeyboardEvent.code`, same origin as [`KeyCode`] — a direct mapping.
+//! Closing the page ends everything: the Web has no `CloseRequested`
+//! semantics.
 //! 窗口实体是 `<canvas>`：按 id `starfish-window` 查找，其次取页面
 //! 第一个 canvas，都没有则自建并铺满页面。
 //! 坐标按 `devicePixelRatio` 换算为物理像素（与桌面约定一致）。
@@ -29,12 +43,17 @@ use crate::handle::RawWindowHandle;
 use crate::window::WindowOptions;
 
 thread_local! {
+    /// Single window (wasm is single-threaded): the live window's state.
     /// 单窗口（wasm 单线程）：存活窗口的状态。
     static STATE: RefCell<Option<Rc<WebState>>> = const { RefCell::new(None) };
+    /// The rAF redraw loop's self-reference handle; dropping it stops the
+    /// scheduling.
     /// rAF 重绘循环的自引用句柄；drop 即停止调度。
     static FRAME_LOOP: RefCell<Option<Closure<dyn FnMut()>>> = const { RefCell::new(None) };
 }
 
+/// The context shared by DOM closures (canvas + event channel).
+/// Closures capture only this — never `WebState` — avoiding Rc cycles.
 /// DOM 闭包共享的上下文（画布 + 事件通道）。
 /// 闭包只捕获它，不捕获 `WebState`，避免 Rc 循环。
 #[cfg(feature = "event")]
@@ -46,9 +65,11 @@ struct Ctx {
 
 struct WebState {
     canvas: HtmlCanvasElement,
+    /// The event channel between DOM callbacks and `poll_event`.
     /// DOM 回调与 `poll_event` 之间的事件通道。
     #[cfg(feature = "event")]
     shared: Rc<RefCell<Shared>>,
+    /// Holds the listener closures while alive; dropping detaches them.
     /// 存活期内持有监听器闭包；drop 即解除监听。
     #[cfg(feature = "event")]
     _listeners: Vec<Closure<dyn FnMut(JsValue)>>,
@@ -56,8 +77,11 @@ struct WebState {
 
 #[cfg(feature = "event")]
 struct Shared {
+    /// Events translated from DOM callbacks, awaiting dispatch.
     /// DOM 回调翻译出的待发事件。
     pending: VecDeque<Event>,
+    /// The redraw request set by rAF and consumed by poll (coalesced /
+    /// deduplicated).
     /// rAF 置位、poll 消费的重绘请求（合并去重）。
     redraw: bool,
 }
@@ -72,7 +96,8 @@ impl WindowInner {
         let canvas = Self::acquire_canvas(&document)?;
         canvas.set_tab_index(0);
 
-        Self::sync_canvas_size(&canvas); // 返回值无关紧要：首同步必装配尺寸
+        Self::sync_canvas_size(&canvas); // The return value doesn't matter here: the first sync always sizes the canvas
+        // 返回值无关紧要：首同步必装配尺寸
 
         #[cfg_attr(not(feature = "event"), allow(unused_mut))]
         let mut state = Rc::new(WebState {
@@ -86,6 +111,8 @@ impl WindowInner {
             _listeners: Vec::new(),
         });
 
+        // Closures capture only Ctx (canvas + channel), so listeners can be
+        // attached before back-filling the state.
         // 闭包只捕获 Ctx（canvas + 通道），因此可以先挂监听再回填 state。
         #[cfg(feature = "event")]
         let listeners = Self::attach_listeners(&Ctx {
@@ -98,15 +125,21 @@ impl WindowInner {
         }
 
         if STATE.with_borrow_mut(|slot| slot.replace(state).is_some()) {
+            // Window::build's global guard already blocks a second window;
+            // this is just a safety net.
             // Window::build 的全局守卫已挡住第二窗口；此处仅兜底。
             return Err(WindowError::AlreadyExists);
         }
         #[cfg(feature = "event")]
         Self::start_frame_loop(&document);
-        let _ = options; // 标题走 document.title 语义，尺寸以画布为准
+        let _ = options; // Title goes through document.title semantics; size is canvas-driven
         Ok(Self {
+            // The slot.replace above consumed the Rc; take it back.
             // 上面 slot.replace 消耗了 Rc，这里重新取回。
-            state: STATE.with_borrow(|slot| slot.clone().expect("STATE 刚刚写入")),
+            state: STATE.with_borrow(|slot| {
+                slot.clone()
+                    .expect("STATE was just written / STATE 刚刚写入")
+            }),
         })
     }
 
@@ -134,6 +167,8 @@ impl WindowInner {
     }
 
     pub(crate) fn raw_handle(&self) -> RawWindowHandle {
+        // The canvas element's JsValue object pointer (same source as
+        // wgpu's Web-backend WebCanvas path).
         // canvas 元素的 JsValue 对象指针（wgpu Web 后端 WebCanvas 路径同源）
         let canvas: &HtmlCanvasElement = &self.state.canvas;
         let js: &JsValue = canvas;
@@ -142,7 +177,11 @@ impl WindowInner {
         }
     }
 
-    // ── 运行期窗口能力（平台矩阵：Web 列）────────────────────────
+    // ── Runtime window capabilities (the Web column of the platform
+    //    matrix) / 运行期窗口能力（平台矩阵：Web 列）────────────────
+    // What the browser cannot do = warn-once no-op; what it can maps
+    // directly onto DOM/canvas. warn-once uses a thread_local set (once
+    // per key, no per-frame spam).
     // 浏览器做不到的 = warn-once no-op；能做的直接映射 DOM/canvas。
     // warn-once 用 thread_local 集合（每 key 一次，不随帧刷屏）。
 
@@ -159,16 +198,19 @@ impl WindowInner {
         });
     }
 
-    /// 样式写入辅助（canvas.style）
+    /// Style-writing helper (`canvas.style`).
+    /// 样式写入辅助（canvas.style）。
     fn set_canvas_style(&self, prop: &str, value: &str) {
         self.state.canvas.style().set_property(prop, value).ok();
     }
 
     pub(crate) fn set_resizable(&mut self, _resizable: bool) {
+        // The browser window's size is managed by the user / page layout:
+        // canvas offers no resize handle.
         // 浏览器窗口尺寸由用户/页面管理：canvas 不提供 resize 把手
         Self::warn_once(
             "resizable",
-            "[starfish-window] web: RESIZABLE 由页面布局决定,忽略",
+            "[starfish-window] web: RESIZABLE is decided by the page layout; ignored / 由页面布局决定,忽略",
         );
     }
 
@@ -176,6 +218,13 @@ impl WindowInner {
         false
     }
 
+    /// Sets the client size (physical-pixel semantics, matching desktop).
+    ///
+    /// Writes both representations directly: the attribute = physical
+    /// pixels, the inline style = physical/dpr CSS pixels. Deliberately
+    /// does NOT go through [`Self::sync_canvas_size`] (which reads layout
+    /// and multiplies by dpr — the physical parameter would be scaled a
+    /// second time).
     /// 设置客户区尺寸（物理像素语义，与桌面约定一致）。
     ///
     /// 直接写两份：属性 = 物理像素，内联样式 = 物理/dpr 的 CSS 像素。
@@ -185,20 +234,28 @@ impl WindowInner {
         let dpr = self.dpi_scale() as f64;
         let style = self.state.canvas.style();
         style
-            .set_property("width", &format!("{}px", (width as f64 / dpr).round().max(1.0)))
+            .set_property(
+                "width",
+                &format!("{}px", (width as f64 / dpr).round().max(1.0)),
+            )
             .ok();
         style
-            .set_property("height", &format!("{}px", (height as f64 / dpr).round().max(1.0)))
+            .set_property(
+                "height",
+                &format!("{}px", (height as f64 / dpr).round().max(1.0)),
+            )
             .ok();
         self.state.canvas.set_width(width.max(1));
         self.state.canvas.set_height(height.max(1));
     }
 
-    /// 全屏 v0 no-op（Element::requestFullscreen 接入为后续项）
+    /// Fullscreen is a v0 no-op (Element::requestFullscreen integration is
+    /// a follow-up).
+    /// 全屏 v0 no-op（Element::requestFullscreen 接入为后续项）。
     pub(crate) fn set_fullscreen(&mut self, _fullscreen: bool) {
         Self::warn_once(
             "fullscreen",
-            "[starfish-window] web: FULLSCREEN v0 暂不支持(后续接 requestFullscreen)",
+            "[starfish-window] web: FULLSCREEN not supported in v0 (requestFullscreen is a follow-up) / v0 暂不支持(后续接 requestFullscreen)",
         );
     }
 
@@ -207,6 +264,7 @@ impl WindowInner {
     }
 
     pub(crate) fn set_borderless(&mut self, _borderless: bool) {
+        // Browser windows have no decoration concept: no-op.
         // 浏览器窗口无装饰概念：no-op
     }
 
@@ -214,11 +272,13 @@ impl WindowInner {
         false
     }
 
-    /// 鼠标抓取 v0 no-op（Pointer Lock API 接入为后续项）
+    /// Mouse grab is a v0 no-op (Pointer Lock API integration is a
+    /// follow-up).
+    /// 鼠标抓取 v0 no-op（Pointer Lock API 接入为后续项）。
     pub(crate) fn set_mouse_grabbed(&mut self, grabbed: bool) {
         Self::warn_once(
             "mouse_grabbed",
-            "[starfish-window] web: MOUSE_GRABBED v0 暂不支持(后续接 Pointer Lock)",
+            "[starfish-window] web: MOUSE_GRABBED not supported in v0 (Pointer Lock is a follow-up) / v0 暂不支持(后续接 Pointer Lock)",
         );
         let _ = grabbed;
     }
@@ -230,7 +290,7 @@ impl WindowInner {
     pub(crate) fn set_mouse_relative(&mut self, _enable: bool) {
         Self::warn_once(
             "mouse_relative",
-            "[starfish-window] web: 相对鼠标 v0 暂不支持",
+            "[starfish-window] web: relative mouse not supported in v0 / 相对鼠标 v0 暂不支持",
         );
     }
 
@@ -263,7 +323,7 @@ impl WindowInner {
     pub(crate) fn set_always_on_top(&self, _top: bool) {
         Self::warn_once(
             "always_on_top",
-            "[starfish-window] web: ALWAYS_ON_TOP 不适用,忽略",
+            "[starfish-window] web: ALWAYS_ON_TOP does not apply; ignored / 不适用,忽略",
         );
     }
 
@@ -272,20 +332,30 @@ impl WindowInner {
     }
 
     pub(crate) fn minimize(&mut self) {
-        Self::warn_once("minimize", "[starfish-window] web: minimize 不适用,忽略");
+        Self::warn_once(
+            "minimize",
+            "[starfish-window] web: minimize does not apply; ignored / 不适用,忽略",
+        );
     }
 
     pub(crate) fn maximize(&mut self) {
-        Self::warn_once("maximize", "[starfish-window] web: maximize 不适用,忽略");
+        Self::warn_once(
+            "maximize",
+            "[starfish-window] web: maximize does not apply; ignored / 不适用,忽略",
+        );
     }
 
     pub(crate) fn restore(&mut self) {}
 
     pub(crate) fn raise(&mut self) {
-        Self::warn_once("raise", "[starfish-window] web: raise 不适用,忽略");
+        Self::warn_once(
+            "raise",
+            "[starfish-window] web: raise does not apply; ignored / 不适用,忽略",
+        );
     }
 
     pub(crate) fn is_minimized(&self) -> bool {
+        // Page hidden ≈ minimized (visibilitychange semantics).
         // 页面隐藏 ≈ 最小化（visibilitychange 语义）
         web_sys::window()
             .and_then(|w| w.document())
@@ -305,6 +375,7 @@ impl WindowInner {
     }
 
     pub(crate) fn center_on_screen(&mut self) {
+        // The browser manages window position: no-op.
         // 浏览器管理窗口位置：no-op
     }
 
@@ -315,7 +386,10 @@ impl WindowInner {
     pub(crate) fn set_keyboard_grabbed(&mut self, _grab: bool) {}
 
     pub(crate) fn set_position(&mut self, _x: i32, _y: i32) {
-        Self::warn_once("position", "[starfish-window] web: 窗口定位不适用,忽略");
+        Self::warn_once(
+            "position",
+            "[starfish-window] web: window positioning does not apply; ignored / 窗口定位不适用,忽略",
+        );
     }
 
     pub(crate) fn position(&self) -> (i32, i32) {
@@ -341,18 +415,24 @@ impl WindowInner {
             .unwrap_or(1.0)
     }
 
-    /// DPI 缩放比（devicePixelRatio；物理像素约定的基准）
+    /// The DPI scale factor (`devicePixelRatio`; the basis of the
+    /// physical-pixel convention).
+    /// DPI 缩放比（devicePixelRatio；物理像素约定的基准）。
     pub(crate) fn dpi_scale(&self) -> f32 {
         web_sys::window()
             .map(|w| w.device_pixel_ratio() as f32)
             .unwrap_or(1.0)
     }
 
-    /// 高像素密度：物理像素坐标以 dpr 为基准，恒 true
+    /// High pixel density: physical-pixel coordinates are dpr-based, so
+    /// always true.
+    /// 高像素密度：物理像素坐标以 dpr 为基准，恒 true。
     pub(crate) fn high_pixel_density(&self) -> bool {
         true
     }
 
+    /// The underlying `<canvas>` (wasm builds only; used by the Web
+    /// rendering path).
     /// 底层 `<canvas>`（仅 wasm 构建，供 Web 渲染路径使用）。
     pub(crate) fn canvas(&self) -> HtmlCanvasElement {
         self.state.canvas.clone()
@@ -368,9 +448,11 @@ impl Drop for WindowInner {
 
 impl WindowInner {
     fn document() -> Result<Document, WindowError> {
-        web_sys::window()
-            .and_then(|w| w.document())
-            .ok_or_else(|| WindowError::OsError("浏览器环境不可用（无 document）".into()))
+        web_sys::window().and_then(|w| w.document()).ok_or_else(|| {
+            WindowError::OsError(
+                "browser environment unavailable (no document) / 浏览器环境不可用".into(),
+            )
+        })
     }
 
     fn acquire_canvas(document: &Document) -> Result<HtmlCanvasElement, WindowError> {
@@ -379,28 +461,33 @@ impl WindowInner {
             .or_else(|| document.query_selector("canvas").ok().flatten());
         let canvas: HtmlCanvasElement = match found {
             Some(el) => el.dyn_into().map_err(|_| {
-                WindowError::OsError("id=starfish-window 的元素不是 <canvas>".into())
+                WindowError::OsError(
+                    "the element with id=starfish-window is not a <canvas> / id=starfish-window 的元素不是 <canvas>"
+                        .into(),
+                )
             })?,
             None => {
                 let canvas: HtmlCanvasElement = document
                     .create_element("canvas")
-                    .map_err(|_| WindowError::OsError("创建 canvas 失败".into()))?
+                    .map_err(|_| WindowError::OsError("failed to create canvas / 创建 canvas 失败".into()))?
                     .dyn_into()
-                    .map_err(|_| WindowError::OsError("元素不是 canvas".into()))?;
+                    .map_err(|_| WindowError::OsError("the element is not a canvas / 元素不是 canvas".into()))?;
                 canvas
                     .style()
                     .set_css_text("position:fixed;inset:0;width:100vw;height:100vh;display:block;");
                 let body = document
                     .body()
-                    .ok_or_else(|| WindowError::OsError("无 body 元素".into()))?;
+                    .ok_or_else(|| WindowError::OsError("no body element / 无 body 元素".into()))?;
                 body.append_child(&canvas)
-                    .map_err(|_| WindowError::OsError("挂载 canvas 失败".into()))?;
+                    .map_err(|_| WindowError::OsError("failed to mount canvas / 挂载 canvas 失败".into()))?;
                 canvas
             }
         };
         Ok(canvas)
     }
 
+    /// CSS pixels × devicePixelRatio → physical pixels (at least 1, to
+    /// avoid zero-sized surfaces).
     /// CSS 像素 × devicePixelRatio → 物理像素（至少 1，避免 0 尺寸 surface）。
     fn measure(canvas: &HtmlCanvasElement) -> (u32, u32) {
         let dpr = web_sys::window()
@@ -410,10 +497,26 @@ impl WindowInner {
         (scale(canvas.client_width()), scale(canvas.client_height()))
     }
 
+    /// Synchronizes the canvas resolution (width/height attributes) to the
+    /// CSS size × dpr.
     /// 把画布分辨率（width/height 属性）同步为 CSS 尺寸 × dpr。
     ///
+    /// Returns whether the attributes actually changed (for resize-listener
+    /// deduplication).
     /// 返回属性是否真的变化（供 resize 监听去重）。
     ///
+    /// **The inline CSS size must also be pinned** (only when the inline
+    /// style has no explicit width/height): without a CSS size, a canvas's
+    /// layout size is derived from its width/height attributes — writing
+    /// only the attributes creates a positive feedback loop: the next
+    /// `measure()` reads the already-enlarged attribute as the client size,
+    /// multiplies by dpr and writes it back, growing by ×dpr on every
+    /// resize event. Measured in practice: DevTools docking / window
+    /// zooming hit 22763×17073 within 14 rounds, blew past the max texture
+    /// limit (8192) and permanently black-screened the whole
+    /// depth/swapchain chain. Pinning the style decouples the two: the
+    /// attribute only governs render density (physical pixels), the style
+    /// only governs layout size (CSS pixels) — the loop is gone.
     /// **必须同时钉住内联 CSS 尺寸**（仅当内联样式未定宽高时）：canvas
     /// 无 CSS 尺寸时布局尺寸由 width/height 属性决定，只写属性不钉样式
     /// 会形成正反馈——下一轮 measure() 读到的 client 尺寸已是放大后的
@@ -427,6 +530,10 @@ impl WindowInner {
             .map(|w| w.device_pixel_ratio())
             .unwrap_or(1.0);
         let style = canvas.style();
+        // An explicit inline width/height (e.g. the auto-created canvas's
+        // 100vw/100vh) means layout and attributes are already decoupled —
+        // don't overwrite (preserving the page's responsive layout
+        // semantics).
         // 内联样式已定宽高（如自建画布的 100vw/100vh）= 布局与属性已解耦，
         // 不覆盖（保留页面的响应式布局语义）。
         let inline = |prop: &str| {
@@ -439,14 +546,10 @@ impl WindowInner {
         let css_w = rect.width().round().max(1.0);
         let css_h = rect.height().round().max(1.0);
         if !inline("width") {
-            style
-                .set_property("width", &format!("{css_w}px"))
-                .ok();
+            style.set_property("width", &format!("{css_w}px")).ok();
         }
         if !inline("height") {
-            style
-                .set_property("height", &format!("{css_h}px"))
-                .ok();
+            style.set_property("height", &format!("{css_h}px")).ok();
         }
         let width = ((css_w * dpr).round() as u32).max(1);
         let height = ((css_h * dpr).round() as u32).max(1);
@@ -456,6 +559,9 @@ impl WindowInner {
         changed
     }
 
+    /// The rAF loop: sets the redraw flag once per frame. The
+    /// self-reference handle lives in [`FRAME_LOOP`]; clearing it on window
+    /// drop stops the loop (the closure does not hold itself — no leak).
     /// rAF 循环：每帧置一次重绘标志。自引用句柄放在 [`FRAME_LOOP`]，
     /// 窗口 drop 时清空即停摆（闭包不持有自身，无泄漏）。
     #[cfg(feature = "event")]
@@ -479,16 +585,19 @@ impl WindowInner {
         FRAME_LOOP.with_borrow_mut(|slot| *slot = Some(closure));
     }
 
-    // ---------------- 事件监听与翻译（仅 event feature） ----------------
+    // ---------------- Event listeners and translation (event feature
+    //                  only) / 事件监听与翻译（仅 event feature）---------
 
     #[cfg(feature = "event")]
     fn attach_listeners(ctx: &Ctx) -> Result<Vec<Closure<dyn FnMut(JsValue)>>, WindowError> {
-        let js_window =
-            web_sys::window().ok_or_else(|| WindowError::OsError("浏览器环境不可用".into()))?;
+        let js_window = web_sys::window().ok_or_else(|| {
+            WindowError::OsError("browser environment unavailable / 浏览器环境不可用".into())
+        })?;
         let document = Self::document()?;
         let canvas: &web_sys::EventTarget = &ctx.canvas;
         let mut listeners = Vec::new();
 
+        // Keyboard (window level).
         // 键盘（window 级）。
         for (ty, down) in [("keydown", true), ("keyup", false)] {
             let ctx = ctx.clone();
@@ -496,16 +605,19 @@ impl WindowInner {
                 on_key(&ctx, v, down)
             })?);
         }
+        // Mouse (canvas level).
         // 鼠标（canvas 级）。
         for ty in ["mousedown", "mousemove", "mouseup"] {
             let ctx = ctx.clone();
             listeners.push(add_listener(canvas, ty, move |v| on_mouse(&ctx, v))?);
         }
+        // Wheel.
         // 滚轮。
         {
             let ctx = ctx.clone();
             listeners.push(add_listener(canvas, "wheel", move |v| on_wheel(&ctx, v))?);
         }
+        // Focus.
         // 焦点。
         for (ty, gained) in [("focus", true), ("blur", false)] {
             let ctx = ctx.clone();
@@ -517,11 +629,16 @@ impl WindowInner {
                 });
             })?);
         }
+        // Touch (with primary-finger mouse synthesis).
         // 触摸（含主手指合成鼠标）。
         for ty in ["touchstart", "touchmove", "touchend", "touchcancel"] {
             let ctx = ctx.clone();
             listeners.push(add_listener(canvas, ty, move |v| on_touch(&ctx, v, ty))?);
         }
+        // Window resize: sync the canvas resolution first, and only report
+        // Resized when the physical size actually changed (DevTools
+        // docking / browser zoom frequently fire same-size resizes;
+        // without dedup the app side would do pointless surface rebuilds).
         // 窗口尺寸变化：先同步画布分辨率，物理尺寸真的变了才上报
         // Resized（DevTools 停靠/浏览器缩放常触发同尺寸 resize，不去重
         // 会让应用侧做无意义的 surface 重建）。
@@ -537,6 +654,7 @@ impl WindowInner {
                 }
             })?);
         }
+        // Page visibility → lifecycle.
         // 页面可见性 → 生命周期。
         {
             let ctx = ctx.clone();
@@ -576,10 +694,16 @@ where
     }) as Box<dyn FnMut(JsValue)>);
     target
         .add_event_listener_with_callback(ty, closure.as_ref().unchecked_ref())
-        .map_err(|_| WindowError::OsError(format!("addEventListener({ty}) 失败")))?;
+        .map_err(|_| {
+            WindowError::OsError(format!(
+                "addEventListener({ty}) failed / addEventListener({ty}) 失败"
+            ))
+        })?;
     Ok(closure)
 }
 
+/// Event coordinates: CSS client coordinates − canvas origin, × dpr →
+/// physical pixels.
 /// 事件坐标：CSS 客户坐标 − canvas 原点，再乘 dpr → 物理像素。
 #[cfg(feature = "event")]
 fn canvas_coords(ctx: &Ctx, client_x: f64, client_y: f64) -> (f64, f64) {
@@ -599,7 +723,8 @@ fn on_key(ctx: &Ctx, value: JsValue, down: bool) {
         return;
     };
     if ev.is_composing() {
-        return; // IME 组合过程首版不接（约定），只收最终文本。
+        return; // No IME composition in the first version (agreement); final text only.
+        // IME 组合过程首版不接（约定），只收最终文本。
     }
     let modifiers = Modifiers {
         shift: ev.shift_key(),
@@ -607,10 +732,14 @@ fn on_key(ctx: &Ctx, value: JsValue, down: bool) {
         alt: ev.alt_key(),
         meta: ev.meta_key(),
     };
+    // Unrecognized codes carry no extra information (Other only takes
+    // native numeric key codes).
     // 未识别的 code 不携带更多信息（Other 只收原生数字键码）。
     let key = KeyCode::from_w3c_code(&ev.code()).unwrap_or(KeyCode::Other(0));
     let mut shared = ctx.shared.borrow_mut();
     if down {
+        // A single printable character → TextInput (W3C `key`; no IME
+        // composition).
         // 可打印单字符 → TextInput（W3C `key`；无 IME 组合）。
         let text = ev.key();
         let mut chars = text.chars();
@@ -641,6 +770,7 @@ fn on_mouse(ctx: &Ctx, value: JsValue) {
     match ev.type_().as_str() {
         "mousemove" => shared.pending.push_back(Event::MouseMoved { x, y }),
         "mousedown" | "mouseup" => {
+            // W3C button: 0 left / 1 middle / 2 right / 3 back / 4 forward.
             // W3C button：0 左 / 1 中 / 2 右 / 3 后退 / 4 前进。
             let button = match ev.button() {
                 0 => MouseButton::Left,
@@ -666,6 +796,8 @@ fn on_wheel(ctx: &Ctx, value: JsValue) {
     let Some(ev) = value.dyn_ref::<WheelEvent>() else {
         return;
     };
+    // deltaMode: 0 pixels / 1 line / 2 pages — normalized to a pixel
+    // scale.
     // deltaMode：0 像素 / 1 行 / 2 页，统一折算成像素量纲。
     let unit = match ev.delta_mode() {
         1 => 16.0,
@@ -675,6 +807,8 @@ fn on_wheel(ctx: &Ctx, value: JsValue) {
             .unwrap_or(800.0),
         _ => 1.0,
     };
+    // The browser scrolls positive-down; this crate's convention is
+    // positive-up — negate.
     // 浏览器滚动向下为正；本 crate 约定正值向上，取反。
     ctx.shared
         .borrow_mut()
@@ -710,6 +844,8 @@ fn on_touch(ctx: &Ctx, value: JsValue, ty: &str) {
             x,
             y,
         });
+        // The primary finger (identifier 0) is synthesized into mouse
+        // events (SDL convention).
         // 主手指（identifier 0）合成鼠标事件（SDL 惯例）。
         if t.identifier() == 0 {
             let mouse = match phase {

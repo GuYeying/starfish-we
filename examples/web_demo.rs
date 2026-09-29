@@ -1,11 +1,19 @@
+//! Web demo: window on a canvas, events printed onto an in-page overlay.
 //! Web 演示：canvas 建窗 + 事件打印到页面覆盖层。
 //!
+//! Packaging: `scripts/build_web.sh` (build → wasm-bindgen → testweb/);
+//! then serve testweb/ with any static server and test in a browser.
 //! 打包：`scripts/build_web.sh`（构建 → wasm-bindgen → testweb/），
 //! 之后用任意静态服务器伺服 testweb/ 即可在浏览器测试。
 //!
+//! The `setTimeout` recursion here plays the role of the "interpreter
+//! tick": the caller drives the main loop and drains events each tick.
 //! 这里的 `setTimeout` 递归就是"解释器 tick"的角色：
 //! 调用者驱动主循环，每 tick 排空事件。
 //!
+//! Note: wasm-only code is `#[cfg]`-gated item by item, while `fn main`
+//! must exist unconditionally (`cargo test` / clippy build this example
+//! on the host).
 //! 注意：wasm 专属代码逐项 `#[cfg]`，`fn main` 必须无条件存在
 //! （`cargo test` / clippy 会在宿主上构建本示例）。
 
@@ -22,6 +30,7 @@ use wasm_bindgen::prelude::*;
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use starfish_window::{Event, Window};
 
+/// The real Web entry point; wasm-bindgen calls it via the `start` hook.
 /// 真正的 Web 入口；wasm-bindgen 以 `start` 钩子调用它。
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 #[wasm_bindgen(start)]

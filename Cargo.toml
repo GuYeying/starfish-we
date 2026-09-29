@@ -2,7 +2,7 @@
 name = "starfish-window"
 version = "0.1.0"
 edition = "2024"
-description = "跨平台单窗口 + 事件（SDL 风格 poll 模型），零依赖基础层，可选 wgpu 对接"
+description = "Cross-platform single-window + events crate (SDL-style poll model); zero-dependency base layer with optional wgpu interop"
 license = "MIT OR Apache-2.0"
 readme = "README.md"
 repository = "https://github.com/GuYeying/starfish-window"

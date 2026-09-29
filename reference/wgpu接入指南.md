@@ -1,5 +1,7 @@
 # starfish-window 接入指南（面向 wgpu 渲染层 / 解释器宿主）
 
+> English version: [wgpu-integration-guide.md](wgpu-integration-guide.md)。
+>
 > 读者：负责对接本库的 agent / 开发者。本文是唯一权威入口，
 > 与 CLAUDE.md（仓库工程约定）、《android绑定运行问题与解决方案.md》
 > （平台差异事故档案）互为补充。
