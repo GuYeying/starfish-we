@@ -47,8 +47,8 @@ loop {
   `raw-window-handle 0.6` (wgpu itself is deliberately not a dependency)
 - **Custom events** — `EventProxy` injects typed payloads into the main
   loop from any thread (a typed replacement for SDL's `RegisterEvents`)
-- **Trimmmable features** — `window` (creation only) / `event` (default,
-  window + events) / `wgpu`
+- **Lean feature set** — events are core; the only optional features are
+  `wgpu` and `android-demo`
 
 ## Platform status
 

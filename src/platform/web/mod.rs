@@ -29,7 +29,6 @@
 use std::cell::RefCell;
 use std::rc::Rc;
 
-#[cfg(feature = "event")]
 use std::collections::VecDeque;
 
 use wasm_bindgen::prelude::Closure;
@@ -37,7 +36,6 @@ use wasm_bindgen::{JsCast, JsValue};
 use web_sys::{Document, HtmlCanvasElement, KeyboardEvent, MouseEvent, WheelEvent};
 
 use crate::error::WindowError;
-#[cfg(feature = "event")]
 use crate::event::{Event, KeyCode, Modifiers, MouseButton, TouchPhase};
 use crate::handle::RawWindowHandle;
 use crate::window::WindowOptions;
@@ -56,7 +54,6 @@ thread_local! {
 /// Closures capture only this — never `WebState` — avoiding Rc cycles.
 /// DOM 闭包共享的上下文（画布 + 事件通道）。
 /// 闭包只捕获它，不捕获 `WebState`，避免 Rc 循环。
-#[cfg(feature = "event")]
 #[derive(Clone)]
 struct Ctx {
     canvas: HtmlCanvasElement,
@@ -67,15 +64,12 @@ struct WebState {
     canvas: HtmlCanvasElement,
     /// The event channel between DOM callbacks and `poll_event`.
     /// DOM 回调与 `poll_event` 之间的事件通道。
-    #[cfg(feature = "event")]
     shared: Rc<RefCell<Shared>>,
     /// Holds the listener closures while alive; dropping detaches them.
     /// 存活期内持有监听器闭包；drop 即解除监听。
-    #[cfg(feature = "event")]
     _listeners: Vec<Closure<dyn FnMut(JsValue)>>,
 }
 
-#[cfg(feature = "event")]
 struct Shared {
     /// Events translated from DOM callbacks, awaiting dispatch.
     /// DOM 回调翻译出的待发事件。
@@ -99,27 +93,22 @@ impl WindowInner {
         Self::sync_canvas_size(&canvas); // The return value doesn't matter here: the first sync always sizes the canvas
         // 返回值无关紧要：首同步必装配尺寸
 
-        #[cfg_attr(not(feature = "event"), allow(unused_mut))]
         let mut state = Rc::new(WebState {
             canvas: canvas.clone(),
-            #[cfg(feature = "event")]
             shared: Rc::new(RefCell::new(Shared {
                 pending: VecDeque::new(),
                 redraw: false,
             })),
-            #[cfg(feature = "event")]
             _listeners: Vec::new(),
         });
 
         // Closures capture only Ctx (canvas + channel), so listeners can be
         // attached before back-filling the state.
         // 闭包只捕获 Ctx（canvas + 通道），因此可以先挂监听再回填 state。
-        #[cfg(feature = "event")]
         let listeners = Self::attach_listeners(&Ctx {
             canvas: canvas.clone(),
             shared: state.shared.clone(),
         })?;
-        #[cfg(feature = "event")]
         if let Some(inner) = Rc::get_mut(&mut state) {
             inner._listeners = listeners;
         }
@@ -130,7 +119,6 @@ impl WindowInner {
             // Window::build 的全局守卫已挡住第二窗口；此处仅兜底。
             return Err(WindowError::AlreadyExists);
         }
-        #[cfg(feature = "event")]
         Self::start_frame_loop(&document);
         let _ = options; // Title goes through document.title semantics; size is canvas-driven
         Ok(Self {
@@ -143,7 +131,6 @@ impl WindowInner {
         })
     }
 
-    #[cfg(feature = "event")]
     pub(crate) fn poll_event(&mut self) -> Option<Event> {
         let mut shared = self.state.shared.borrow_mut();
         if let Some(event) = shared.pending.pop_front() {
@@ -231,22 +218,39 @@ impl WindowInner {
     /// 不走 [`Self::sync_canvas_size`]（那会读布局再乘 dpr，物理参数
     /// 被二次缩放）。
     pub(crate) fn set_size(&mut self, width: u32, height: u32) {
+        // Web 上 set_mode 尺寸 = **逻辑尺寸**（CSS px）；canvas 物理
+        // 分辨率 = 逻辑 × dpr。与 [`Self::sync_canvas_size`] 同源，消除
+        // "swapchain 跟随 canvas 属性、深度纹理跟随 Resized 尺寸"两条
+        // 路径的语义冲突（否则 dpr≠1 时深度/颜色附件脱节，BeginRenderPass
+        // 校验失败）。物理坐标约定（客户区物理像素）在 Web 无窗口语义，
+        // 统一以逻辑尺寸映射。
         let dpr = self.dpi_scale() as f64;
         let style = self.state.canvas.style();
         style
-            .set_property(
-                "width",
-                &format!("{}px", (width as f64 / dpr).round().max(1.0)),
-            )
+            .set_property("width", &format!("{}px", width.max(1)))
             .ok();
         style
-            .set_property(
-                "height",
-                &format!("{}px", (height as f64 / dpr).round().max(1.0)),
-            )
+            .set_property("height", &format!("{}px", height.max(1)))
             .ok();
-        self.state.canvas.set_width(width.max(1));
-        self.state.canvas.set_height(height.max(1));
+        let pw = ((width.max(1) as f64 * dpr).round() as u32).max(1);
+        let ph = ((height.max(1) as f64 * dpr).round() as u32).max(1);
+        self.state.canvas.set_width(pw);
+        self.state.canvas.set_height(ph);
+        // wgpu Web 表面自动跟随 canvas 属性，而引擎侧 Screen（swapchain
+        // + 深度纹理）停在旧尺寸——不补发 Resized，应用侧永不重建 → 深度
+        // 与颜色附件脱节。Windows 侧 set_size 经 WM_SIZE→wndproc 自动推
+        // Resized，web 缺这一环，此处补上（尺寸 = canvas 实际物理属性，
+        // 与 swapchain 严格一致）。
+        {
+            self.state
+                .shared
+                .borrow_mut()
+                .pending
+                .push_back(Event::Resized {
+                    width: pw,
+                    height: ph,
+                });
+        }
     }
 
     /// Fullscreen is a v0 no-op (Element::requestFullscreen integration is
@@ -564,7 +568,6 @@ impl WindowInner {
     /// drop stops the loop (the closure does not hold itself — no leak).
     /// rAF 循环：每帧置一次重绘标志。自引用句柄放在 [`FRAME_LOOP`]，
     /// 窗口 drop 时清空即停摆（闭包不持有自身，无泄漏）。
-    #[cfg(feature = "event")]
     fn start_frame_loop(document: &Document) -> () {
         let _ = document;
         let Some(js_window) = web_sys::window() else {
@@ -588,7 +591,6 @@ impl WindowInner {
     // ---------------- Event listeners and translation (event feature
     //                  only) / 事件监听与翻译（仅 event feature）---------
 
-    #[cfg(feature = "event")]
     fn attach_listeners(ctx: &Ctx) -> Result<Vec<Closure<dyn FnMut(JsValue)>>, WindowError> {
         let js_window = web_sys::window().ok_or_else(|| {
             WindowError::OsError("browser environment unavailable / 浏览器环境不可用".into())
@@ -677,7 +679,6 @@ impl WindowInner {
     }
 }
 
-#[cfg(feature = "event")]
 fn add_listener<F>(
     target: &web_sys::EventTarget,
     ty: &str,
@@ -705,7 +706,6 @@ where
 /// Event coordinates: CSS client coordinates − canvas origin, × dpr →
 /// physical pixels.
 /// 事件坐标：CSS 客户坐标 − canvas 原点，再乘 dpr → 物理像素。
-#[cfg(feature = "event")]
 fn canvas_coords(ctx: &Ctx, client_x: f64, client_y: f64) -> (f64, f64) {
     let rect = ctx.canvas.get_bounding_client_rect();
     let dpr = web_sys::window()
@@ -717,7 +717,6 @@ fn canvas_coords(ctx: &Ctx, client_x: f64, client_y: f64) -> (f64, f64) {
     )
 }
 
-#[cfg(feature = "event")]
 fn on_key(ctx: &Ctx, value: JsValue, down: bool) {
     let Some(ev) = value.dyn_ref::<KeyboardEvent>() else {
         return;
@@ -760,7 +759,6 @@ fn on_key(ctx: &Ctx, value: JsValue, down: bool) {
     }
 }
 
-#[cfg(feature = "event")]
 fn on_mouse(ctx: &Ctx, value: JsValue) {
     let Some(ev) = value.dyn_ref::<MouseEvent>() else {
         return;
@@ -791,7 +789,6 @@ fn on_mouse(ctx: &Ctx, value: JsValue) {
     }
 }
 
-#[cfg(feature = "event")]
 fn on_wheel(ctx: &Ctx, value: JsValue) {
     let Some(ev) = value.dyn_ref::<WheelEvent>() else {
         return;
@@ -819,7 +816,6 @@ fn on_wheel(ctx: &Ctx, value: JsValue) {
         });
 }
 
-#[cfg(feature = "event")]
 fn on_touch(ctx: &Ctx, value: JsValue, ty: &str) {
     let Some(ev) = value.dyn_ref::<web_sys::TouchEvent>() else {
         return;

@@ -49,7 +49,6 @@ use android_activity::input::{InputEvent, KeyAction, Keycode, MotionAction};
 use android_activity::{AndroidApp, InputStatus, MainEvent, PollEvent};
 
 use crate::error::WindowError;
-#[cfg(feature = "event")]
 use crate::event::{Event, KeyCode, Modifiers, MouseButton, TouchPhase};
 use crate::handle::RawWindowHandle;
 use crate::window::WindowOptions;
@@ -74,7 +73,6 @@ static APP: Mutex<Option<AndroidApp>> = Mutex::new(None);
 /// Events translated from platform callbacks (single window; process-wide
 /// buffer).
 /// 平台回调翻译出的待发事件（单窗口，进程级缓冲）。
-#[cfg(feature = "event")]
 static PENDING: Mutex<VecDeque<Event>> = Mutex::new(VecDeque::new());
 
 /// Whether this run has seen `InitWindow` (surface ready).
@@ -87,7 +85,6 @@ static PENDING: Mutex<VecDeque<Event>> = Mutex::new(VecDeque::new());
 /// 用于丢弃进程复用时的**旧实例串扰**：上一实例的 onDestroy 可能晚到、
 /// 落进新实例的事件流，若照单全收会被翻译成 `CloseRequested`，
 /// 表现为"再次启动秒退"。
-#[cfg(feature = "event")]
 static WINDOW_READY: AtomicBool = AtomicBool::new(false);
 
 /// Called by the host in `android_main` to wire up the system callbacks.
@@ -105,7 +102,6 @@ pub fn android_init(app: AndroidApp) {
     // previous instance may still hold the slot.
     // 单窗口占位按"运行"计算：交叠期内上一实例可能还占着位子。
     crate::window::reset_single_window_slot();
-    #[cfg(feature = "event")]
     {
         PENDING.lock().expect("PENDING 锁中毒").clear();
         WINDOW_READY.store(false, Ordering::Release);
@@ -134,7 +130,6 @@ impl WindowInner {
         Ok(Self)
     }
 
-    #[cfg(feature = "event")]
     pub(crate) fn poll_event(&mut self) -> Option<Event> {
         let app = app_handle().ok()?;
         // Poison-tolerant lock: recover the queue after a concurrent panic
@@ -288,7 +283,6 @@ fn native_window_size() -> Option<(u32, u32)> {
 
 /// Lifecycle event translation.
 /// 生命周期事件翻译。
-#[cfg(feature = "event")]
 fn translate_main(app: &AndroidApp, main: MainEvent<'_>, queue: &mut VecDeque<Event>) {
     use Event as E;
     match main {
@@ -337,7 +331,6 @@ fn translate_main(app: &AndroidApp, main: MainEvent<'_>, queue: &mut VecDeque<Ev
 /// Input event translation: touch (with primary-finger mouse synthesis)
 /// and keys / IME text.
 /// 输入事件翻译：触摸（含主手指合成鼠标）与按键 / IME 文本。
-#[cfg(feature = "event")]
 fn translate_input(queue: &mut VecDeque<Event>, event: &InputEvent<'_>) {
     use Event as E;
     match event {
@@ -435,7 +428,6 @@ fn translate_input(queue: &mut VecDeque<Event>, event: &InputEvent<'_>) {
 /// AKEYCODE value) so no key is lost.
 /// Android `Keycode` → [`KeyCode`]：区间 + 逐项映射，未识别包成
 /// [`KeyCode::Other`]（携带 AKEYCODE 原生值），不丢按键。
-#[cfg(feature = "event")]
 fn keycode_to_keycode(keycode: Keycode) -> KeyCode {
     use KeyCode as K;
     match keycode {

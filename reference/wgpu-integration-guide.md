@@ -43,10 +43,10 @@ starfish-window = { path = "…", features = ["wgpu"] }
 
 | feature | meaning |
 |---|---|
-| `event` (default) | window + events (implies `window`) |
-| `window` | window creation only (`--no-default-features --features window`) |
-| `wgpu` | implements the raw-window-handle 0.6 traits (implies `window`); **wgpu itself is not a dependency** |
+| `wgpu` | implements the raw-window-handle 0.6 traits; **wgpu itself is not a dependency** |
 | `android-demo` | built-in Android demo host (logcat event loop + exit contract) |
+
+Events are core — there is no "window without events" build shape.
 
 ### 2.2 Minimal window creation
 

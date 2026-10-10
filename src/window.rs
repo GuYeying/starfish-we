@@ -8,16 +8,11 @@ use crate::error::WindowError;
 use crate::handle::RawWindowHandle;
 use crate::platform::imp;
 
-#[cfg(feature = "event")]
 use std::any::Any;
-#[cfg(feature = "event")]
 use std::collections::VecDeque;
-#[cfg(feature = "event")]
 use std::sync::Mutex;
-#[cfg(feature = "event")]
 use std::sync::mpsc::{Receiver, Sender, channel};
 
-#[cfg(feature = "event")]
 use crate::event::{Event, UserEvent};
 
 /// The only window in the process.
@@ -44,7 +39,6 @@ pub struct Window {
     /// Sender side of the user-event channel (shared by `push_event` and
     /// `EventProxy`).
     /// 用户自定义事件通道的发送端（`push_event` / `EventProxy` 共享）。
-    #[cfg(feature = "event")]
     user_tx: Sender<UserEvent>,
     /// Receiver side of the user-event channel (consumed only by
     /// `poll_event` on the creating thread). The `Mutex` exists solely to
@@ -53,12 +47,10 @@ pub struct Window {
     /// 用户自定义事件通道的接收端（仅 `poll_event` 在创建线程消费）。
     /// 套 `Mutex` 只为保住 `Window: Sync`（wgpu `create_surface` 的 bound）；
     /// 锁实际无竞争——消费仅在创建线程。
-    #[cfg(feature = "event")]
     user_rx: Mutex<Receiver<UserEvent>>,
     /// User events that have arrived and await dispatch (cross-thread
     /// injections are drained in `poll_event`).
     /// 已到达、待派发的用户事件（跨线程注入在 `poll_event` 中排空）。
-    #[cfg(feature = "event")]
     user_pending: VecDeque<UserEvent>,
 }
 
@@ -130,17 +122,13 @@ impl Window {
         }
         match imp::WindowInner::new(&options) {
             Ok(inner) => {
-                #[cfg(feature = "event")]
                 let (user_tx, user_rx) = channel();
-                #[cfg(feature = "event")]
-                return Ok(Self {
+                Ok(Self {
                     inner,
                     user_tx,
                     user_rx: Mutex::new(user_rx),
                     user_pending: VecDeque::new(),
-                });
-                #[cfg(not(feature = "event"))]
-                Ok(Self { inner })
+                })
             }
             Err(err) => {
                 WINDOW_ALIVE.store(false, Ordering::SeqCst);
@@ -169,7 +157,6 @@ impl Window {
     /// [`EventProxy`] 注入）先于本轮平台事件派发：`send` 之后下一次
     /// `poll_event` 必定可见；与平台事件的相对顺序不作全局 FIFO 承诺，
     /// 批量注入时按序逐条派发（期间平台事件短暂延迟、不丢失）。
-    #[cfg(feature = "event")]
     pub fn poll_event(&mut self) -> Option<Event> {
         let rx = self.user_rx.lock().expect("user-event lock poisoned");
         while let Ok(user) = rx.try_recv() {
@@ -187,7 +174,6 @@ impl Window {
     /// as `Event::User`.
     /// 注入一条自定义事件（同线程便捷版；跨线程用
     /// [`event_proxy`](Window::event_proxy)）。经 `Event::User` 派发。
-    #[cfg(feature = "event")]
     pub fn push_event(&self, code: u32, payload: impl Any + Send + Sync) {
         let _ = self.user_tx.send(UserEvent::new(code, payload));
     }
@@ -201,7 +187,6 @@ impl Window {
     /// After the `Window` is destroyed, `send` returns
     /// `Err(EventProxyClosed)`.
     /// `Window` 销毁后 `send` 返回 `Err(EventProxyClosed)`。
-    #[cfg(feature = "event")]
     pub fn event_proxy(&self) -> EventProxy {
         EventProxy {
             tx: self.user_tx.clone(),
@@ -477,7 +462,6 @@ impl Drop for Window {
 /// 这是窗口 API 唯一的跨线程入口——`Window` 本身的方法仍限创建线程。
 #[derive(Clone)]
 pub struct EventProxy {
-    #[cfg(feature = "event")]
     tx: Sender<UserEvent>,
 }
 
@@ -491,7 +475,6 @@ impl EventProxy {
     /// the channel is full / the window is destroyed).
     /// 任意线程可调用；事件在下一次 `poll_event` 可见。
     /// 载荷即发即弃（通道满 / 窗口已销毁时丢弃并返回 `Err`）。
-    #[cfg(feature = "event")]
     pub fn send(&self, code: u32, payload: impl Any + Send + Sync) -> Result<(), EventProxyClosed> {
         self.tx
             .send(UserEvent::new(code, payload))
@@ -535,6 +518,17 @@ pub(crate) struct WindowOptions {
     pub(crate) min_size: Option<(u32, u32)>,
     pub(crate) max_size: Option<(u32, u32)>,
     pub(crate) always_on_top: bool,
+    /// Per-pixel transparent window (creation-time; Windows =
+    /// WS_EX_NOREDIRECTIONBITMAP + DWM direct composition — the swapchain
+    /// alpha composites straight onto the desktop, desktop-pet form).
+    /// 逐像素透明窗口（**创建期**；Windows 采用 WS_EX_NOREDIRECTIONBITMAP
+    /// 加 DWM 直通合成——交换链 alpha 直接与桌面混合，桌宠/悬浮件形态。
+    /// 运行期不可追溯）。
+    pub(crate) transparent: bool,
+    /// 分层桌宠窗（**创建期**；Windows = WS_EX_LAYERED +
+    /// UpdateLayeredWindow 逐像素 alpha——帧经 update_layered 上屏，
+    /// 交换链不参与显示。桌宠通道）。
+    pub(crate) layered: bool,
     /// Creation flags (SDL semantics; backends translate them into
     /// platform behavior).
     /// 创建标志（SDL 语义；后端翻译为平台行为）。
@@ -620,11 +614,28 @@ impl WindowBuilder {
         self
     }
 
+    /// Layered pet window (Windows: WS_EX_LAYERED + UpdateLayeredWindow
+    /// per-pixel alpha — the desktop-pet channel; the frame is updated
+    /// via [`Window::update_layered`], not the swapchain). Defaults to
+    /// `false`.
+    /// 分层桌宠窗（Windows：WS_EX_LAYERED + UpdateLayeredWindow 逐像素
+    /// alpha 合成；帧经 [`Window::update_layered`] 上屏而非交换链）。
+    /// 默认 `false`。
+    pub fn layered(mut self, layered: bool) -> Self {
+        self.options.layered = layered;
+        self
+    }
+
     /// Creation flags (SDL-style bit combination; when combined with the
     /// setters above, flags only fix the initial state).
     /// 创建标志（SDL 语义位组合；与各 setter 叠加时 flag 仅定初始状态）。
     pub fn flags(mut self, flags: crate::flags::WindowFlags) -> Self {
         self.options.flags = flags;
+        // TRANSPARENT = 创建期逐像素透明（Windows = WS_EX_NOREDIRECTIONBITMAP；
+        // 运行期不可追溯，故走独立 options 字段而非 post-create 位）
+        self.options.transparent = flags.contains(crate::flags::WindowFlags::TRANSPARENT);
+        // LAYERED = 分层桌宠窗（UpdateLayeredWindow 通道，创建期扩展样式）
+        self.options.layered = flags.contains(crate::flags::WindowFlags::LAYERED);
         self
     }
 
@@ -636,7 +647,7 @@ impl WindowBuilder {
     }
 }
 
-#[cfg(all(test, feature = "window", not(windows)))]
+#[cfg(all(test, not(windows)))]
 mod tests {
     use super::*;
     use crate::flags::WindowFlags;

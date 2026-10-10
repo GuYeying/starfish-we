@@ -13,14 +13,12 @@ repository = "https://github.com/GuYeying/starfish-window"
 crate-type = ["lib", "cdylib"]
 
 [features]
-default = ["event"]
-# 事件以窗口为事件源：启用 event 必然带上 window。
-event = ["window"]
-# 仅建窗能力（无事件拉取）。
-window = []
+# Safe wgpu interop: implements the raw-window-handle traits so
+# instance.create_surface(&window) works with zero unsafe.
 # 安全对接 wgpu：实现 raw-window-handle trait，使 instance.create_surface(&window) 直通。
 # 刻意不依赖 wgpu 本体。
-wgpu = ["dep:raw-window-handle", "window"]
+wgpu = ["dep:raw-window-handle"]
+# Built-in Android demo host (logcat event loop + exit contract).
 # 内置 Android 演示宿主（logcat 事件循环 + 退出契约）。
 # 打 APK：cargo apk build --features android-demo
 # 注意：这里用旧式 feature 语法（dep: 语法无法引用 target 门控的可选依赖）。

@@ -39,9 +39,7 @@
 //!
 //! | feature | meaning / 含义 |
 //! |---|---|
-//! | `window` | window creation only / 仅建窗能力 |
-//! | `event` (default / 默认) | window + events (implies `window`) / 窗口 + 事件（依赖 `window`） |
-//! | `wgpu` | raw-window-handle interop (implies `window`) / raw-window-handle 对接（依赖 `window`） |
+//! | `wgpu` | raw-window-handle interop / raw-window-handle 对接 |
 //! | `android-demo` | built-in Android demo host / 内置 Android 演示宿主 |
 //!
 //! Architecture: each target platform is one parallel module under
@@ -53,27 +51,19 @@
 #![deny(missing_docs)]
 
 mod error;
-#[cfg(feature = "event")]
 mod event;
 pub mod flags;
-#[cfg(feature = "window")]
 mod handle;
-#[cfg(feature = "window")]
 mod platform;
 #[cfg(feature = "wgpu")]
 mod rwh_impl;
-#[cfg(feature = "window")]
 mod window;
 
 pub use error::WindowError;
-#[cfg(feature = "event")]
 pub use event::{Event, KeyCode, Modifiers, MouseButton, TouchPhase, UserEvent};
 pub use flags::WindowFlags;
-#[cfg(feature = "window")]
 pub use handle::RawWindowHandle;
-#[cfg(feature = "window")]
 pub use window::Window;
-#[cfg(all(feature = "window", feature = "event"))]
 pub use window::{EventProxy, EventProxyClosed};
 
 /// (Android builds only) Call from the host's `android_main` to wire up

@@ -55,8 +55,14 @@ impl WindowFlags {
     /// Start maximized.
     /// 创建即最大化。
     pub const MAXIMIZED: Self = Self(1 << 9);
-    // Bits 1<<10 and above are reserved.
-    // 1<<10 以上预留。
+    /// Layered window (Windows: `WS_EX_LAYERED` + `UpdateLayeredWindow`
+    /// per-pixel alpha composition — the desktop-pet channel; the frame is
+    /// updated via `Window::update_layered` instead of the swapchain).
+    /// 分层窗（Windows：WS_EX_LAYERED + UpdateLayeredWindow 逐像素 alpha
+    /// 合成——桌宠通道；帧经 `Window::update_layered` 上屏而非交换链）。
+    pub const LAYERED: Self = Self(1 << 10);
+    // Bits 1<<11 and above are reserved.
+    // 1<<11 以上预留。
 
     /// Combine arbitrary flag bits.
     /// 组合任意标志位。

@@ -38,9 +38,10 @@ starfish-window = { path = "…", features = ["wgpu"] }
 
 | feature | 含义 |
 |---|---|
-| `event`（默认） | 窗口 + 事件（隐含 `window`） |
-| `window` | 仅建窗（无事件；`--no-default-features --features window`） |
-| `wgpu` | 实现 raw-window-handle 0.6 trait（隐含 `window`）；**不依赖 wgpu 本体** |
+| `wgpu` | 实现 raw-window-handle 0.6 trait；**不依赖 wgpu 本体** |
+| `android-demo` | 内置 Android 演示宿主（logcat 事件循环 + 退出契约） |
+
+事件是核心能力，不存在"仅建窗无事件"的构建形态。
 
 ### 2.2 最小建窗
 

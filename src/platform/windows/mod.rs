@@ -21,16 +21,12 @@
 //!   dropping the [`Window`](crate::Window).
 //!   `WM_CLOSE` 不直接销毁窗口：是否销毁由用户 drop [`Window`](crate::Window) 决定。
 //!
-//! Layering: all message→event translation lives in [`translate`] (compiled
-//! only under the `event` feature); this module handles window creation,
-//! message pumping, state attachment and system-default fallback — so
-//! `--no-default-features --features window` (window without events) also
-//! holds.
-//! 分层：消息 → 事件的翻译全部在 [`translate`]（仅 `event` feature 编译）；
-//! 本模块只负责建窗、泵消息、状态挂载与系统默认兜底，因此
-//! `--no-default-features --features window`（仅建窗、无事件）同样成立。
+//! Layering: all message→event translation lives in [`translate`]; this
+//! module handles window creation, message pumping, state attachment and
+//! system-default fallback.
+//! 分层：消息 → 事件的翻译全部在 [`translate`]；
+//! 本模块只负责建窗、泵消息、状态挂载与系统默认兜底。
 
-#[cfg(feature = "event")]
 mod translate;
 
 use std::iter::once;
@@ -38,7 +34,6 @@ use std::mem;
 use std::ptr;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-#[cfg(feature = "event")]
 use std::collections::VecDeque;
 
 use windows_sys::Win32::Foundation::{
@@ -50,7 +45,6 @@ use windows_sys::Win32::UI::HiDpi as hid;
 use windows_sys::Win32::UI::WindowsAndMessaging as wm;
 
 use crate::error::WindowError;
-#[cfg(feature = "event")]
 use crate::event::Event;
 use crate::handle::RawWindowHandle;
 use crate::window::WindowOptions;
@@ -85,13 +79,11 @@ struct WndState {
     max_size: Option<(u32, u32)>,
     /// Events translated by the wndproc, awaiting dispatch.
     /// wndproc 翻译出的待发事件。
-    #[cfg(feature = "event")]
     pending: VecDeque<Event>,
     /// Bitmask of held mouse buttons (see `translate::button_bit`),
     /// driving `SetCapture` / `ReleaseCapture`.
     /// 按下中的鼠标键位掩码（见 `translate::button_bit`），
     /// 驱动 `SetCapture` / `ReleaseCapture`。
-    #[cfg(feature = "event")]
     mouse_down: u8,
     // ── Runtime window state (SDL flag semantics on Win32) /
     //    运行期窗口状态（SDL flag 语义的 Win32 落地）──
@@ -121,7 +113,6 @@ impl WindowInner {
         unsafe { Self::create(options) }
     }
 
-    #[cfg(feature = "event")]
     pub(crate) fn poll_event(&mut self) -> Option<Event> {
         let state = self.state;
         // SAFETY: state is valid for the window's lifetime and accessed
@@ -551,9 +542,15 @@ impl WindowInner {
     pub(crate) fn set_opacity(&mut self, opacity: f32) {
         // SAFETY: hwnd 有效；透明度 <1.0 需 WS_EX_LAYERED + 分层属性。
         unsafe {
+            // 透明创建窗（WS_EX_NOREDIRECTIONBITMAP）不适用 LAYERED——
+            // 分层路径与 DWM 直通合成冲突（会打断逐像素透明）。透明窗的
+            // 整体透明度 v1 忽略（绘制侧 set_alpha 调制承载）。
+            let ex = wm::GetWindowLongW(self.hwnd, wm::GWL_EXSTYLE) as u32;
+            if ex & wm::WS_EX_NOREDIRECTIONBITMAP != 0 {
+                return;
+            }
             let state = &mut *self.state;
             state.opacity = opacity.clamp(0.0, 1.0);
-            let ex = wm::GetWindowLongW(self.hwnd, wm::GWL_EXSTYLE) as u32;
             if state.opacity < 1.0 {
                 wm::SetWindowLongW(self.hwnd, wm::GWL_EXSTYLE, (ex | wm::WS_EX_LAYERED) as i32);
                 let alpha = (state.opacity * 255.0) as u8;
@@ -678,9 +675,7 @@ impl WindowInner {
                 size: (width, height),
                 min_size: options.min_size,
                 max_size: options.max_size,
-                #[cfg(feature = "event")]
                 pending: VecDeque::new(),
-                #[cfg(feature = "event")]
                 mouse_down: 0,
                 fullscreen: false,
                 saved_placement: None,
@@ -709,8 +704,15 @@ impl WindowInner {
             // lpCreateParams carries the state pointer; wndproc attaches it
             // on WM_NCCREATE.
             // lpCreateParams 携带 state 指针，WM_NCCREATE 时由 wndproc 挂上窗口。
+            // TRANSPARENT：WS_EX_NOREDIRECTIONBITMAP——去掉 GDI 重定向位图，
+            // DWM 直接合成交换链内容（交换链 alpha 预乘 → 逐像素透明，
+            // 桌宠/悬浮件形态。GDI 绘制在此类窗口不可用——纯 wgpu 渲染无碍）
+            let mut ex_style = 0u32;
+            if options.transparent {
+                ex_style |= wm::WS_EX_NOREDIRECTIONBITMAP;
+            }
             let hwnd = wm::CreateWindowExW(
-                0,
+                ex_style,
                 class_name.as_ptr(),
                 title_w.as_ptr(),
                 style,
@@ -857,7 +859,6 @@ unsafe extern "system" fn wndproc(hwnd: HWND, msg: u32, wparam: WPARAM, lparam: 
         // Event translation: Some = handled, return the result to the
         // system directly.
         // 事件翻译：返回 Some 即已处理，直接把结果交还系统。
-        #[cfg(feature = "event")]
         if let Some(result) = translate::handle_message(state, hwnd, msg, wparam, lparam) {
             return result;
         }

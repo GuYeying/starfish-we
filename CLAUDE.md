@@ -33,11 +33,12 @@ starfish-window 是一个跨平台的**单窗口 + 事件** crate，用于替换
 
 ```toml
 [features]
-default = ["event"]                    # 窗口+事件，零依赖
-event  = ["window"]                    # 事件以窗口为事件源，间接启用 window
-window = []                            # 仅建窗，无事件
-wgpu   = ["dep:raw-window-handle"]     # 安全对接 wgpu（不在 default 里）
+wgpu          = ["dep:raw-window-handle"]  # 安全对接 wgpu
+android-demo  = ["android_logger", "log", "libc"]  # 内置 Android 演示宿主
 ```
+
+事件是核心能力，**没有** event/window feature（2026-09-29 移除：
+"仅建窗无事件"是无人能用的配置，且 cfg 噪音遍布全库）。
 
 **自定义事件**：`Event::User(UserEvent)` + `Window::push_event`（同线程）/
 `Window::event_proxy() -> EventProxy`（Clone+Send+Sync，跨线程注入，
