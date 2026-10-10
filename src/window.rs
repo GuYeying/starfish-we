@@ -15,6 +15,13 @@ use std::sync::mpsc::{Receiver, Sender, channel};
 
 use crate::event::{Event, UserEvent};
 
+/// The per-window user-event inbox (channel receiver + arrived events).
+/// 每窗口用户事件收件箱（通道接收端 + 已到达事件）。
+struct Inbox {
+    rx: Receiver<UserEvent>,
+    pending: VecDeque<UserEvent>,
+}
+
 /// The only window in the process.
 /// 进程内唯一的窗口。
 ///
@@ -40,18 +47,18 @@ pub struct Window {
     /// `EventProxy`).
     /// 用户自定义事件通道的发送端（`push_event` / `EventProxy` 共享）。
     user_tx: Sender<UserEvent>,
-    /// Receiver side of the user-event channel (consumed only by
-    /// `poll_event` on the creating thread). The `Mutex` exists solely to
-    /// keep `Window: Sync` (required by wgpu's `create_surface`); the lock
-    /// is uncontended in practice — consumption happens on one thread.
-    /// 用户自定义事件通道的接收端（仅 `poll_event` 在创建线程消费）。
+    /// The user-event inbox: the channel receiver plus events that have
+    /// arrived and await dispatch. The `Mutex` exists solely to keep
+    /// `Window: Sync` (required by wgpu's `create_surface`); the lock is
+    /// uncontended in practice — consumption happens on one thread.
+    /// Interior mutability keeps every `Window` method `&self` — required
+    /// so a wgpu surface can hold `&Window` while the loop keeps polling.
+    /// 用户自定义事件的收件箱：通道接收端 + 已到达待派发的事件。
     /// 套 `Mutex` 只为保住 `Window: Sync`（wgpu `create_surface` 的 bound）；
-    /// 锁实际无竞争——消费仅在创建线程。
-    user_rx: Mutex<Receiver<UserEvent>>,
-    /// User events that have arrived and await dispatch (cross-thread
-    /// injections are drained in `poll_event`).
-    /// 已到达、待派发的用户事件（跨线程注入在 `poll_event` 中排空）。
-    user_pending: VecDeque<UserEvent>,
+    /// 锁实际无竞争——消费仅在创建线程。内部可变性让所有 `Window` 方法
+    /// 保持 `&self`——这是 wgpu surface 持有 `&Window` 期间循环仍能 poll
+    /// 的前提。
+    user_inbox: Mutex<Inbox>,
 }
 
 /// Global slot for the single-window invariant; `true` while a `Window` is
@@ -126,8 +133,10 @@ impl Window {
                 Ok(Self {
                     inner,
                     user_tx,
-                    user_rx: Mutex::new(user_rx),
-                    user_pending: VecDeque::new(),
+                    user_inbox: Mutex::new(Inbox {
+                        rx: user_rx,
+                        pending: VecDeque::new(),
+                    }),
                 })
             }
             Err(err) => {
@@ -157,13 +166,12 @@ impl Window {
     /// [`EventProxy`] 注入）先于本轮平台事件派发：`send` 之后下一次
     /// `poll_event` 必定可见；与平台事件的相对顺序不作全局 FIFO 承诺，
     /// 批量注入时按序逐条派发（期间平台事件短暂延迟、不丢失）。
-    pub fn poll_event(&mut self) -> Option<Event> {
-        let rx = self.user_rx.lock().expect("user-event lock poisoned");
-        while let Ok(user) = rx.try_recv() {
-            self.user_pending.push_back(user);
+    pub fn poll_event(&self) -> Option<Event> {
+        let mut inbox = self.user_inbox.lock().expect("user-event lock poisoned");
+        while let Ok(user) = inbox.rx.try_recv() {
+            inbox.pending.push_back(user);
         }
-        drop(rx);
-        if let Some(user) = self.user_pending.pop_front() {
+        if let Some(user) = inbox.pending.pop_front() {
             return Some(Event::User(user));
         }
         self.inner.poll_event()
@@ -201,7 +209,7 @@ impl Window {
 
     /// Sets the window title.
     /// 设置窗口标题。
-    pub fn set_title(&mut self, title: &str) {
+    pub fn set_title(&self, title: &str) {
         self.inner.set_title(title);
     }
 
@@ -223,7 +231,7 @@ impl Window {
 
     /// Sets whether the user can resize the window.
     /// 设置是否可由用户调整大小。
-    pub fn set_resizable(&mut self, resizable: bool) {
+    pub fn set_resizable(&self, resizable: bool) {
         self.inner.set_resizable(resizable)
     }
 
@@ -235,14 +243,14 @@ impl Window {
 
     /// Sets the client-area size (physical pixels).
     /// 设置客户区尺寸（物理像素）。
-    pub fn set_size(&mut self, size: (u32, u32)) {
+    pub fn set_size(&self, size: (u32, u32)) {
         self.inner.set_size(size.0, size.1)
     }
 
     /// Enters / leaves borderless fullscreen (the pre-entry position and
     /// size are restored on exit).
     /// 进入 / 退出无边框全屏（退出时还原进入前位置与尺寸）。
-    pub fn set_fullscreen(&mut self, fullscreen: bool) {
+    pub fn set_fullscreen(&self, fullscreen: bool) {
         self.inner.set_fullscreen(fullscreen)
     }
 
@@ -254,7 +262,7 @@ impl Window {
 
     /// Sets / clears the borderless style.
     /// 设置 / 取消无边框。
-    pub fn set_borderless(&mut self, borderless: bool) {
+    pub fn set_borderless(&self, borderless: bool) {
         self.inner.set_borderless(borderless)
     }
 
@@ -266,7 +274,7 @@ impl Window {
 
     /// Grabs / releases the mouse (confined to the client area).
     /// 抓取 / 释放鼠标（限定在客户区内）。
-    pub fn set_mouse_grabbed(&mut self, grabbed: bool) {
+    pub fn set_mouse_grabbed(&self, grabbed: bool) {
         self.inner.set_mouse_grabbed(grabbed)
     }
 
@@ -278,13 +286,13 @@ impl Window {
 
     /// Relative mouse mode (approximate: grab + hidden cursor).
     /// 相对鼠标模式（近似实现：抓取 + 隐藏光标）。
-    pub fn set_mouse_relative(&mut self, enable: bool) {
+    pub fn set_mouse_relative(&self, enable: bool) {
         self.inner.set_mouse_relative(enable)
     }
 
     /// Shows / hides the cursor.
     /// 显示 / 隐藏光标。
-    pub fn set_cursor_visible(&mut self, visible: bool) {
+    pub fn set_cursor_visible(&self, visible: bool) {
         self.inner.set_cursor_visible(visible)
     }
 
@@ -296,7 +304,7 @@ impl Window {
 
     /// Shows / hides the window.
     /// 显示 / 隐藏窗口。
-    pub fn set_visible(&mut self, visible: bool) {
+    pub fn set_visible(&self, visible: bool) {
         self.inner.set_visible(visible)
     }
 
@@ -308,7 +316,7 @@ impl Window {
 
     /// Sets / clears always-on-top.
     /// 设置 / 取消窗口置顶。
-    pub fn set_always_on_top(&mut self, top: bool) {
+    pub fn set_always_on_top(&self, top: bool) {
         self.inner.set_always_on_top(top)
     }
 
@@ -320,25 +328,25 @@ impl Window {
 
     /// Minimizes the window.
     /// 最小化窗口。
-    pub fn minimize(&mut self) {
+    pub fn minimize(&self) {
         self.inner.minimize()
     }
 
     /// Maximizes the window.
     /// 最大化窗口。
-    pub fn maximize(&mut self) {
+    pub fn maximize(&self) {
         self.inner.maximize()
     }
 
     /// Restores from minimized / maximized.
     /// 从最小化 / 最大化还原。
-    pub fn restore(&mut self) {
+    pub fn restore(&self) {
         self.inner.restore()
     }
 
     /// Raises the window to the top of the Z order.
     /// 提升窗口到 Z 序顶部。
-    pub fn raise(&mut self) {
+    pub fn raise(&self) {
         self.inner.raise()
     }
 
@@ -370,14 +378,14 @@ impl Window {
     /// Grabs the keyboard (no window-level Win32 equivalent; always a
     /// no-op).
     /// 键盘抓取（Win32 无窗口级等价，恒 no-op）。
-    pub fn set_keyboard_grabbed(&mut self, grab: bool) {
+    pub fn set_keyboard_grabbed(&self, grab: bool) {
         self.inner.set_keyboard_grabbed(grab)
     }
 
     /// Sets the top-left corner of the window frame (screen coordinates,
     /// physical pixels).
     /// 设置窗口外框左上角位置（屏幕坐标，物理像素）。
-    pub fn set_position(&mut self, position: (i32, i32)) {
+    pub fn set_position(&self, position: (i32, i32)) {
         self.inner.set_position(position.0, position.1)
     }
 
@@ -390,7 +398,7 @@ impl Window {
 
     /// Centers the window on its monitor's work area.
     /// 居中于所在显示器工作区。
-    pub fn center_on_screen(&mut self) {
+    pub fn center_on_screen(&self) {
         self.inner.center_on_screen()
     }
 
@@ -402,7 +410,7 @@ impl Window {
 
     /// Sets the window opacity (0.0–1.0; 1.0 = fully opaque).
     /// 设置窗口不透明度（0.0~1.0；1.0 = 全不透明）。
-    pub fn set_opacity(&mut self, opacity: f32) {
+    pub fn set_opacity(&self, opacity: f32) {
         self.inner.set_opacity(opacity)
     }
 

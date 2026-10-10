@@ -33,40 +33,40 @@ impl WindowInner {
         Err(WindowError::UnsupportedPlatform) // TODO: UIApplication + UIWindow
     }
 
-    pub(crate) fn set_resizable(&mut self, _resizable: bool) {}
+    pub(crate) fn set_resizable(&self, _resizable: bool) {}
     pub(crate) fn is_resizable(&self) -> bool {
         false
     }
-    pub(crate) fn set_size(&mut self, _width: u32, _height: u32) {}
-    pub(crate) fn set_fullscreen(&mut self, _fullscreen: bool) {}
+    pub(crate) fn set_size(&self, _width: u32, _height: u32) {}
+    pub(crate) fn set_fullscreen(&self, _fullscreen: bool) {}
     pub(crate) fn is_fullscreen(&self) -> bool {
         false
     }
-    pub(crate) fn set_borderless(&mut self, _borderless: bool) {}
+    pub(crate) fn set_borderless(&self, _borderless: bool) {}
     pub(crate) fn is_borderless(&self) -> bool {
         false
     }
-    pub(crate) fn set_mouse_grabbed(&mut self, _grabbed: bool) {}
+    pub(crate) fn set_mouse_grabbed(&self, _grabbed: bool) {}
     pub(crate) fn is_mouse_grabbed(&self) -> bool {
         false
     }
-    pub(crate) fn set_mouse_relative(&mut self, _enable: bool) {}
-    pub(crate) fn set_cursor_visible(&mut self, _visible: bool) {}
+    pub(crate) fn set_mouse_relative(&self, _enable: bool) {}
+    pub(crate) fn set_cursor_visible(&self, _visible: bool) {}
     pub(crate) fn is_cursor_visible(&self) -> bool {
         true
     }
-    pub(crate) fn set_visible(&mut self, _visible: bool) {}
+    pub(crate) fn set_visible(&self, _visible: bool) {}
     pub(crate) fn is_visible(&self) -> bool {
         true
     }
-    pub(crate) fn set_always_on_top(&mut self, _top: bool) {}
+    pub(crate) fn set_always_on_top(&self, _top: bool) {}
     pub(crate) fn is_always_on_top(&self) -> bool {
         false
     }
-    pub(crate) fn minimize(&mut self) {}
-    pub(crate) fn maximize(&mut self) {}
-    pub(crate) fn restore(&mut self) {}
-    pub(crate) fn raise(&mut self) {}
+    pub(crate) fn minimize(&self) {}
+    pub(crate) fn maximize(&self) {}
+    pub(crate) fn restore(&self) {}
+    pub(crate) fn raise(&self) {}
     pub(crate) fn is_minimized(&self) -> bool {
         false
     }
@@ -79,16 +79,16 @@ impl WindowInner {
     pub(crate) fn is_occluded(&self) -> bool {
         false
     }
-    pub(crate) fn set_keyboard_grabbed(&mut self, _grab: bool) {}
-    pub(crate) fn set_position(&mut self, _x: i32, _y: i32) {}
+    pub(crate) fn set_keyboard_grabbed(&self, _grab: bool) {}
+    pub(crate) fn set_position(&self, _x: i32, _y: i32) {}
     pub(crate) fn position(&self) -> (i32, i32) {
         (0, 0)
     }
-    pub(crate) fn center_on_screen(&mut self) {}
+    pub(crate) fn center_on_screen(&self) {}
     pub(crate) fn title(&self) -> String {
         String::new()
     }
-    pub(crate) fn set_opacity(&mut self, _opacity: f32) {}
+    pub(crate) fn set_opacity(&self, _opacity: f32) {}
     pub(crate) fn opacity(&self) -> f32 {
         1.0
     }
@@ -99,7 +99,7 @@ impl WindowInner {
         false
     }
 
-    pub(crate) fn poll_event(&mut self) -> Option<Event> {
+    pub(crate) fn poll_event(&self) -> Option<Event> {
         None // TODO: drain from the buffered event queue / 从事件缓冲队列排空
     }
 
@@ -108,7 +108,7 @@ impl WindowInner {
         (0, 0)
     }
 
-    pub(crate) fn set_title(&mut self, _title: &str) {
+    pub(crate) fn set_title(&self, _title: &str) {
         // iOS has no title-bar concept; map to the root view's accessible
         // label or ignore entirely.
         // iOS 无标题栏概念；映射为顶层视图 accessible 标签或直接忽略

@@ -39,6 +39,7 @@ starfish-window = { path = "…", features = ["wgpu"] }
 | feature | 含义 |
 |---|---|
 | `wgpu` | 实现 raw-window-handle 0.6 trait；**不依赖 wgpu 本体** |
+| `wgpu-auto` | 隐含 `wgpu` 并引入 wgpu 本体：`AutoSurface` 接管 resize→configure 循环 |
 | `android-demo` | 内置 Android 演示宿主（logcat 事件循环 + 退出契约） |
 
 事件是核心能力，不存在"仅建窗无事件"的构建形态。

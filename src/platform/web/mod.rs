@@ -131,7 +131,7 @@ impl WindowInner {
         })
     }
 
-    pub(crate) fn poll_event(&mut self) -> Option<Event> {
+    pub(crate) fn poll_event(&self) -> Option<Event> {
         let mut shared = self.state.shared.borrow_mut();
         if let Some(event) = shared.pending.pop_front() {
             return Some(event);
@@ -147,7 +147,7 @@ impl WindowInner {
         Self::measure(&self.state.canvas)
     }
 
-    pub(crate) fn set_title(&mut self, title: &str) {
+    pub(crate) fn set_title(&self, title: &str) {
         if let Ok(document) = Self::document() {
             document.set_title(title);
         }
@@ -191,7 +191,7 @@ impl WindowInner {
         self.state.canvas.style().set_property(prop, value).ok();
     }
 
-    pub(crate) fn set_resizable(&mut self, _resizable: bool) {
+    pub(crate) fn set_resizable(&self, _resizable: bool) {
         // The browser window's size is managed by the user / page layout:
         // canvas offers no resize handle.
         // 浏览器窗口尺寸由用户/页面管理：canvas 不提供 resize 把手
@@ -217,7 +217,7 @@ impl WindowInner {
     /// 直接写两份：属性 = 物理像素，内联样式 = 物理/dpr 的 CSS 像素。
     /// 不走 [`Self::sync_canvas_size`]（那会读布局再乘 dpr，物理参数
     /// 被二次缩放）。
-    pub(crate) fn set_size(&mut self, width: u32, height: u32) {
+    pub(crate) fn set_size(&self, width: u32, height: u32) {
         // Web 上 set_mode 尺寸 = **逻辑尺寸**（CSS px）；canvas 物理
         // 分辨率 = 逻辑 × dpr。与 [`Self::sync_canvas_size`] 同源，消除
         // "swapchain 跟随 canvas 属性、深度纹理跟随 Resized 尺寸"两条
@@ -256,7 +256,7 @@ impl WindowInner {
     /// Fullscreen is a v0 no-op (Element::requestFullscreen integration is
     /// a follow-up).
     /// 全屏 v0 no-op（Element::requestFullscreen 接入为后续项）。
-    pub(crate) fn set_fullscreen(&mut self, _fullscreen: bool) {
+    pub(crate) fn set_fullscreen(&self, _fullscreen: bool) {
         Self::warn_once(
             "fullscreen",
             "[starfish-window] web: FULLSCREEN not supported in v0 (requestFullscreen is a follow-up) / v0 暂不支持(后续接 requestFullscreen)",
@@ -267,7 +267,7 @@ impl WindowInner {
         false
     }
 
-    pub(crate) fn set_borderless(&mut self, _borderless: bool) {
+    pub(crate) fn set_borderless(&self, _borderless: bool) {
         // Browser windows have no decoration concept: no-op.
         // 浏览器窗口无装饰概念：no-op
     }
@@ -279,7 +279,7 @@ impl WindowInner {
     /// Mouse grab is a v0 no-op (Pointer Lock API integration is a
     /// follow-up).
     /// 鼠标抓取 v0 no-op（Pointer Lock API 接入为后续项）。
-    pub(crate) fn set_mouse_grabbed(&mut self, grabbed: bool) {
+    pub(crate) fn set_mouse_grabbed(&self, grabbed: bool) {
         Self::warn_once(
             "mouse_grabbed",
             "[starfish-window] web: MOUSE_GRABBED not supported in v0 (Pointer Lock is a follow-up) / v0 暂不支持(后续接 Pointer Lock)",
@@ -291,14 +291,14 @@ impl WindowInner {
         false
     }
 
-    pub(crate) fn set_mouse_relative(&mut self, _enable: bool) {
+    pub(crate) fn set_mouse_relative(&self, _enable: bool) {
         Self::warn_once(
             "mouse_relative",
             "[starfish-window] web: relative mouse not supported in v0 / 相对鼠标 v0 暂不支持",
         );
     }
 
-    pub(crate) fn set_cursor_visible(&mut self, visible: bool) {
+    pub(crate) fn set_cursor_visible(&self, visible: bool) {
         self.set_canvas_style("cursor", if visible { "default" } else { "none" });
     }
 
@@ -335,23 +335,23 @@ impl WindowInner {
         false
     }
 
-    pub(crate) fn minimize(&mut self) {
+    pub(crate) fn minimize(&self) {
         Self::warn_once(
             "minimize",
             "[starfish-window] web: minimize does not apply; ignored / 不适用,忽略",
         );
     }
 
-    pub(crate) fn maximize(&mut self) {
+    pub(crate) fn maximize(&self) {
         Self::warn_once(
             "maximize",
             "[starfish-window] web: maximize does not apply; ignored / 不适用,忽略",
         );
     }
 
-    pub(crate) fn restore(&mut self) {}
+    pub(crate) fn restore(&self) {}
 
-    pub(crate) fn raise(&mut self) {
+    pub(crate) fn raise(&self) {
         Self::warn_once(
             "raise",
             "[starfish-window] web: raise does not apply; ignored / 不适用,忽略",
@@ -378,7 +378,7 @@ impl WindowInner {
             .unwrap_or(false)
     }
 
-    pub(crate) fn center_on_screen(&mut self) {
+    pub(crate) fn center_on_screen(&self) {
         // The browser manages window position: no-op.
         // 浏览器管理窗口位置：no-op
     }
@@ -387,9 +387,9 @@ impl WindowInner {
         false
     }
 
-    pub(crate) fn set_keyboard_grabbed(&mut self, _grab: bool) {}
+    pub(crate) fn set_keyboard_grabbed(&self, _grab: bool) {}
 
-    pub(crate) fn set_position(&mut self, _x: i32, _y: i32) {
+    pub(crate) fn set_position(&self, _x: i32, _y: i32) {
         Self::warn_once(
             "position",
             "[starfish-window] web: window positioning does not apply; ignored / 窗口定位不适用,忽略",
@@ -404,7 +404,7 @@ impl WindowInner {
         Self::document().map(|d| d.title()).unwrap_or_default()
     }
 
-    pub(crate) fn set_opacity(&mut self, opacity: f32) {
+    pub(crate) fn set_opacity(&self, opacity: f32) {
         let v = opacity.clamp(0.0, 1.0);
         self.set_canvas_style("opacity", &format!("{v}"));
     }

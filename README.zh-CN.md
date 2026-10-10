@@ -40,6 +40,8 @@ loop {
   `raw-window-handle 0.6`（刻意不依赖 wgpu 本体）
 - **自定义事件**：`EventProxy` 跨线程向主循环注入类型化载荷（SDL
   `RegisterEvents` 的类型化替代）
+- **自动适配 surface**：可选 `wgpu-auto` feature 由库接管 resize→configure
+  循环，消费者无需手写 `Resized` 处理
 - **精简 feature 集**：事件属于核心能力；可选 feature 只有 `wgpu` 和
   `android-demo`
 

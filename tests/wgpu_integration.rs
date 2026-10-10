@@ -100,5 +100,36 @@ fn wgpu_surface_from_window_zero_unsafe() {
     // handles).
     // drop 顺序：先 surface 后 window（surface 借用窗口句柄）。
     drop(surface);
+
+    // 7. AutoSurface (wgpu-auto feature): the library owns the
+    //    resize→configure cycle — resize via set_size and the next acquire
+    //    returns the NEW size with zero consumer-side handling.
+    // 7. AutoSurface（wgpu-auto feature）：库接管 resize→configure——
+    //    set_size 之后下一次 acquire 直接返回新尺寸，消费侧零处理。
+    #[cfg(feature = "wgpu-auto")]
+    {
+        let mut auto = starfish_window::AutoSurface::new(&window, &instance)
+            .expect("AutoSurface::new failed / AutoSurface::new 失败");
+        let frame = auto
+            .acquire()
+            .expect("AutoSurface first acquire failed / AutoSurface 首次取帧失败");
+        assert_eq!((frame.texture.width(), frame.texture.height()), (256, 256));
+        drop(frame);
+
+        window.set_size((320, 200));
+        // Pump WM_SIZE so the size cache updates.
+        // 泵一轮 WM_SIZE 让尺寸缓存更新。
+        for _ in 0..64 {
+            if window.poll_event().is_none() {
+                break;
+            }
+        }
+        let frame = auto
+            .acquire()
+            .expect("AutoSurface post-resize acquire failed / AutoSurface 调整后取帧失败");
+        assert_eq!((frame.texture.width(), frame.texture.height()), (320, 200));
+        drop(frame);
+    }
+
     drop(window);
 }

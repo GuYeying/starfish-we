@@ -113,7 +113,7 @@ impl WindowInner {
         unsafe { Self::create(options) }
     }
 
-    pub(crate) fn poll_event(&mut self) -> Option<Event> {
+    pub(crate) fn poll_event(&self) -> Option<Event> {
         let state = self.state;
         // SAFETY: state is valid for the window's lifetime and accessed
         // only on this thread (Win32 thread affinity).
@@ -149,7 +149,7 @@ impl WindowInner {
         unsafe { (*self.state).size }
     }
 
-    pub(crate) fn set_title(&mut self, title: &str) {
+    pub(crate) fn set_title(&self, title: &str) {
         let title_w: Vec<u16> = title.encode_utf16().chain(once(0)).collect();
         // SAFETY: title_w is NUL-terminated and outlives the call.
         // SAFETY: title_w 以 NUL 结尾，存活至调用返回。
@@ -213,7 +213,7 @@ impl WindowInner {
         (self.style_raw() & wm::WS_THICKFRAME) != 0
     }
 
-    pub(crate) fn set_fullscreen(&mut self, fullscreen: bool) {
+    pub(crate) fn set_fullscreen(&self, fullscreen: bool) {
         // SAFETY: hwnd 有效；进入全屏保存 placement，退出按 placement 还原。
         unsafe {
             let state = &mut *self.state;
@@ -301,7 +301,7 @@ impl WindowInner {
         (self.style_raw() & wm::WS_CAPTION) == 0
     }
 
-    pub(crate) fn set_mouse_grabbed(&mut self, grabbed: bool) {
+    pub(crate) fn set_mouse_grabbed(&self, grabbed: bool) {
         // SAFETY: hwnd 有效；ClipCursor 限定在本窗口客户区（屏幕坐标）。
         unsafe {
             let state = &mut *self.state;
@@ -342,12 +342,12 @@ impl WindowInner {
     /// Relative mouse mode, v0 approximation: clip + hide cursor (a true
     /// raw-input mode awaits Raw Input integration).
     /// 相对鼠标模式 v0 近似：抓屏 + 隐藏光标（真·原始输入模式待接 Raw Input）。
-    pub(crate) fn set_mouse_relative(&mut self, enable: bool) {
+    pub(crate) fn set_mouse_relative(&self, enable: bool) {
         self.set_mouse_grabbed(enable);
         self.set_cursor_visible(!enable);
     }
 
-    pub(crate) fn set_cursor_visible(&mut self, visible: bool) {
+    pub(crate) fn set_cursor_visible(&self, visible: bool) {
         // SAFETY: ShowCursor 是显示计数器；按布尔一次显/隐，状态自管理。
         unsafe {
             let state = &mut *self.state;
@@ -469,7 +469,7 @@ impl WindowInner {
     /// Keyboard grab: no window-level Win32 equivalent (SetFocus is a
     /// thread-scoped concept), always a no-op.
     /// 键盘抓取：Win32 无窗口级等价（SetFocus 为线程内概念），恒 no-op。
-    pub(crate) fn set_keyboard_grabbed(&mut self, _grab: bool) {}
+    pub(crate) fn set_keyboard_grabbed(&self, _grab: bool) {}
 
     pub(crate) fn position(&self) -> (i32, i32) {
         // SAFETY: hwnd 有效；GetWindowRect = 外框左上（屏幕坐标）。
@@ -497,7 +497,7 @@ impl WindowInner {
 
     /// Centers the window on its monitor's work area.
     /// 居中于所在显示器工作区。
-    pub(crate) fn center_on_screen(&mut self) {
+    pub(crate) fn center_on_screen(&self) {
         // SAFETY: hwnd 有效；MonitorFromWindow/GetMonitorInfoW 均为查询。
         unsafe {
             let mut rect = mem::zeroed();
@@ -539,7 +539,7 @@ impl WindowInner {
         }
     }
 
-    pub(crate) fn set_opacity(&mut self, opacity: f32) {
+    pub(crate) fn set_opacity(&self, opacity: f32) {
         // SAFETY: hwnd 有效；透明度 <1.0 需 WS_EX_LAYERED + 分层属性。
         unsafe {
             // 透明创建窗（WS_EX_NOREDIRECTIONBITMAP）不适用 LAYERED——
@@ -582,7 +582,7 @@ impl WindowInner {
         true
     }
 
-    pub(crate) fn set_size(&mut self, width: u32, height: u32) {
+    pub(crate) fn set_size(&self, width: u32, height: u32) {
         // SAFETY: hwnd 有效；客户区尺寸 → 外框尺寸后 SetWindowPos。
         unsafe {
             let style = wm::GetWindowLongW(self.hwnd, wm::GWL_STYLE) as u32;
@@ -754,7 +754,7 @@ impl WindowInner {
             if !options.hidden {
                 wm::ShowWindow(hwnd, wm::SW_SHOW);
             }
-            let mut this = Self { hwnd, state };
+            let this = Self { hwnd, state };
 
             // Apply post-create flags (the runtime method family works
             // directly on the creating thread).

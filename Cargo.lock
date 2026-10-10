@@ -1024,15 +1024,17 @@ dependencies = [
 
 [[package]]
 name = "starfish-window"
-version = "0.1.0"
+version = "0.2.0"
 dependencies = [
  "android-activity",
  "android_logger",
+ "js-sys",
  "libc",
  "log",
  "pollster",
  "raw-window-handle",
  "wasm-bindgen",
+ "wasm-bindgen-futures",
  "web-sys",
  "wgpu",
  "windows-sys",

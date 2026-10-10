@@ -44,6 +44,7 @@ starfish-window = { path = "…", features = ["wgpu"] }
 | feature | meaning |
 |---|---|
 | `wgpu` | implements the raw-window-handle 0.6 traits; **wgpu itself is not a dependency** |
+| `wgpu-auto` | implies `wgpu`, pulls in wgpu: [`AutoSurface`](…) owns the resize→configure cycle |
 | `android-demo` | built-in Android demo host (logcat event loop + exit contract) |
 
 Events are core — there is no "window without events" build shape.

@@ -57,12 +57,16 @@ mod handle;
 mod platform;
 #[cfg(feature = "wgpu")]
 mod rwh_impl;
+#[cfg(feature = "wgpu-auto")]
+mod wgpu_auto;
 mod window;
 
 pub use error::WindowError;
 pub use event::{Event, KeyCode, Modifiers, MouseButton, TouchPhase, UserEvent};
 pub use flags::WindowFlags;
 pub use handle::RawWindowHandle;
+#[cfg(feature = "wgpu-auto")]
+pub use wgpu_auto::{AutoSurface, AutoSurfaceError};
 pub use window::Window;
 pub use window::{EventProxy, EventProxyClosed};
 
@@ -82,6 +86,52 @@ pub use platform::android::android_init;
 /// 宿主 `android_main` 签名所需。
 #[cfg(target_os = "android")]
 pub use android_activity::AndroidApp;
+
+/// Wait for the next frame — the per-frame yield primitive of the poll
+/// model. Call it unconditionally at the end of the application loop body.
+///
+/// 等待下一帧——poll 模型的**逐帧让出原语**，在应用循环体末尾无条件调用。
+///
+/// - **Desktop / Android**: no-op async. The frame cadence is naturally
+///   bounded by vsync'd present (or `Clock`-style throttling).
+///   桌面/Android：no-op async——帧节奏由 vsync present（或 Clock 类节流）
+///   自然承担。
+/// - **Web**: the `requestAnimationFrame` promise bridge. The browser
+///   requires the loop to yield every frame — a tight `loop {}` without
+///   this call freezes the page's renderer. **This primitive is what makes
+///   the poll model complete on the web**; without it a consumer would have
+///   to hand-write the wasm-bindgen rAF bridge (non-trivial, easy to get
+///   wrong).
+///   Web：`requestAnimationFrame` 的 Promise 桥。浏览器强制循环逐帧让出
+///   ——没有本调用，紧密 `loop {}` 会冻结页面渲染进程。**本原语是 poll
+///   模型在 Web 上成立的一半**；没有它，消费者就得手写 wasm-bindgen 的
+///   rAF 桥（非平凡且易错）。
+///
+/// ```ignore
+/// let mut window = Window::new(...)?;
+/// loop {
+///     while let Some(event) = window.poll_event() { /* ... */ }
+///     // draw ...
+///     starfish_window::next_frame().await;   // ← unconditional, all platforms
+/// }
+/// ```
+#[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
+pub async fn next_frame() {}
+
+/// Web implementation: the rAF promise bridge（Web 实现 = rAF 的 Promise
+/// 桥；语义与注意事项见上方桌面孪生分支的文档）。
+#[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
+pub async fn next_frame() {
+    let promise = js_sys::Promise::new(
+        &mut |resolve: js_sys::Function, _reject: js_sys::Function| {
+            web_sys::window()
+                .expect("web: no global window / 无全局 window")
+                .request_animation_frame(&resolve)
+                .expect("requestAnimationFrame failed / rAF 调用失败");
+        },
+    );
+    let _ = wasm_bindgen_futures::JsFuture::from(promise).await;
+}
 
 // Built-in Android demo host (android-demo feature): one line wires up the
 // APK entry point.

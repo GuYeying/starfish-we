@@ -47,6 +47,8 @@ loop {
   `raw-window-handle 0.6` (wgpu itself is deliberately not a dependency)
 - **Custom events** — `EventProxy` injects typed payloads into the main
   loop from any thread (a typed replacement for SDL's `RegisterEvents`)
+- **Auto-resizing surface** — the opt-in `wgpu-auto` feature owns the
+  resize→configure cycle; consumers never hand-write `Resized` handling
 - **Lean feature set** — events are core; the only optional features are
   `wgpu` and `android-demo`
 

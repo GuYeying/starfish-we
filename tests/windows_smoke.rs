@@ -19,7 +19,7 @@ use starfish_window::{Event, EventProxyClosed, Window, WindowError};
 #[test]
 fn window_lifecycle_and_builder() {
     // ---- Basic path: Window::new / 基础路径：Window::new ----
-    let mut window =
+    let window =
         Window::new("starfish smoke", (320, 240), WindowFlags::default()).expect("建窗失败");
 
     // The client area exactly equals the requested size (the frame was
@@ -48,7 +48,7 @@ fn window_lifecycle_and_builder() {
     // ---- Builder, all options: borderless + fixed + size range +
     //      always-on-top / builder 全选项：无边框 + 不可调 + 尺寸范围 + 置顶
     drop(window);
-    let mut window = Window::builder()
+    let window = Window::builder()
         .title("builder smoke")
         .size((400, 300))
         .resizable(false)
@@ -81,7 +81,7 @@ fn window_lifecycle_and_builder() {
     // ---- After drop, the Window::new compatibility path still works /
     //      drop 后 Window::new 兼容路径仍可用 ----
     drop(window);
-    let mut window = Window::new("compat", (100, 100), WindowFlags::default()).expect("重建失败");
+    let window = Window::new("compat", (100, 100), WindowFlags::default()).expect("重建失败");
 
     // ---- Custom events: cross-thread injection → poll dispatch →
     //      downcast → defunct after close /

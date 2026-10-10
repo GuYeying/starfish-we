@@ -34,8 +34,14 @@ starfish-window 是一个跨平台的**单窗口 + 事件** crate，用于替换
 ```toml
 [features]
 wgpu          = ["dep:raw-window-handle"]  # 安全对接 wgpu
+wgpu-auto     = ["wgpu", "dep:wgpu", "dep:pollster"]  # AutoSurface 自动 resize→configure
 android-demo  = ["android_logger", "log", "libc"]  # 内置 Android 演示宿主
 ```
+
+**AutoSurface（wgpu-auto）**：`AutoSurface::new(&window, &instance)` 一次
+构建（内部 adapter/device/configure），`acquire()` 每帧对账窗口尺寸并
+透明重配置（消化 Suboptimal/Outdated；Timeout/Occluded 返回 None 跳帧，
+Lost 需重建）。真机测试：set_size 后零处理取到新尺寸帧。
 
 事件是核心能力，**没有** event/window feature（2026-09-29 移除：
 "仅建窗无事件"是无人能用的配置，且 cfg 噪音遍布全库）。

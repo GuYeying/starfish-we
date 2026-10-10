@@ -1,6 +1,6 @@
 [package]
 name = "starfish-window"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 description = "Cross-platform single-window + events crate (SDL-style poll model); zero-dependency base layer with optional wgpu interop"
 license = "MIT OR Apache-2.0"
@@ -15,9 +15,16 @@ crate-type = ["lib", "cdylib"]
 [features]
 # Safe wgpu interop: implements the raw-window-handle traits so
 # instance.create_surface(&window) works with zero unsafe.
+# Safe wgpu interop: implements the raw-window-handle traits so
+# instance.create_surface(&window) works with zero unsafe.
 # 安全对接 wgpu：实现 raw-window-handle trait，使 instance.create_surface(&window) 直通。
 # 刻意不依赖 wgpu 本体。
 wgpu = ["dep:raw-window-handle"]
+# Auto-resizing surface: the library owns the resize→configure cycle, so
+# consumers never hand-write Event::Resized handling. Pulls in wgpu.
+# 自动适配 surface：由库接管 resize→configure 循环，消费者无需手写
+# Event::Resized 处理。引入 wgpu + pollster 依赖。
+wgpu-auto = ["wgpu", "dep:wgpu", "dep:pollster"]
 # Built-in Android demo host (logcat event loop + exit contract).
 # 内置 Android 演示宿主（logcat 事件循环 + 退出契约）。
 # 打 APK：cargo apk build --features android-demo
@@ -26,6 +33,9 @@ android-demo = ["android_logger", "log", "libc"]
 
 [dependencies]
 raw-window-handle = { version = "0.6", optional = true }
+# wgpu-auto feature：AutoSurface 的自动 resize→configure。
+wgpu = { version = "30.0.1", optional = true }
+pollster = { version = "1.0", optional = true }
 # 仅 android-demo feature 使用（演示宿主）；不启用则零成本。
 # 不按 target 门控：cargo 的 feature 无法跨 target 引用可选依赖。
 android_logger = { version = "0.14", optional = true }
@@ -46,6 +56,8 @@ windows-sys = { version = "0.59", features = [
 # 被 wgpu(dev-dep)→web-sys 0.3.104 钉在 0.2.127。
 [target.'cfg(all(target_arch = "wasm32", target_os = "unknown"))'.dependencies]
 wasm-bindgen = "=0.2.127"
+wasm-bindgen-futures = "0.4"
+js-sys = "0.3"
 web-sys = { version = "0.3", features = [
     "console",
     "CssStyleDeclaration",

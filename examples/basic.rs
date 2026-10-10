@@ -11,7 +11,7 @@ use starfish_window::flags::WindowFlags;
 use starfish_window::{Event, Window};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
-    let mut window = Window::new("starfish-window demo", (800, 600), WindowFlags::default())?;
+    let window = Window::new("starfish-window demo", (800, 600), WindowFlags::default())?;
     println!(
         "window created, client area = {:?}; close the window to exit / 窗口已创建，客户区 = {:?}，关闭窗口即退出",
         window.size(),
