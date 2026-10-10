@@ -41,7 +41,9 @@ jobs:
         run: cargo test --release --test macos_probe -- --test-threads=1 --nocapture
 
       - name: Full test suite
-        run: cargo test --release
+        # --no-fail-fast: one failing target must not mask the others.
+        # --no-fail-fast：单个失败不得掩盖其余目标的结果。
+        run: cargo test --release --no-fail-fast
 
       - name: Upload probe screenshot
         if: always()

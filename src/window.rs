@@ -655,16 +655,23 @@ impl WindowBuilder {
     }
 }
 
-#[cfg(all(test, not(windows)))]
+// Stub-platform unit test: implemented platforms (windows / macos / web /
+// android) are excluded — their real-behavior tests live in tests/.
+// stub 平台专属单元测试：已实现平台（windows / macos / web / android）
+// 排除在外——真实行为测试位于 tests/。
+#[cfg(all(
+    test,
+    not(any(
+        windows,
+        target_os = "macos",
+        all(target_arch = "wasm32", target_os = "unknown"),
+        target_os = "android"
+    ))
+))]
 mod tests {
     use super::*;
     use crate::flags::WindowFlags;
 
-    // The Windows backend is implemented; see tests/windows_smoke.rs.
-    // Other platforms are still stubs — this asserts the stub behavior and
-    // should be replaced per platform as each lands.
-    // Windows 后端已实现，见 tests/windows_smoke.rs；
-    // 其余平台仍是 stub，断言占位行为，落地后逐平台替换。
     #[test]
     fn stub_backends_report_unsupported() {
         assert!(matches!(
