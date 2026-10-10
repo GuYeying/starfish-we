@@ -131,6 +131,9 @@ harness = false
 [[test]]
 name = "macos_smoke"
 harness = false
+[[test]]
+name = "ios_sim_smoke"
+harness = false
 
 # ── Android APK 打包配置（cargo apk build --features android-demo）──
 [package.metadata.android]
