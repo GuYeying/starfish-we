@@ -199,11 +199,15 @@ impl WindowInner {
         };
 
         // Bring the app up once (regular activation, like a real windowed
-        // app).
+        // app). Without activating, the window server keeps loginwindow
+        // frontmost and the app never receives distributed events.
         // 拉起应用（一次；Regular 激活策略，与真实窗口应用一致）。
+        // 不激活的话，窗口服务器让 loginwindow 保持在最前，应用收不到
+        // 分发的事件。
         let app = NSApplication::sharedApplication(mtm);
         app.setActivationPolicy(objc2_app_kit::NSApplicationActivationPolicy::Regular);
         app.finishLaunching();
+        app.activate();
 
         let (width, height) = options.size;
         // The requested size is the CLIENT size in physical pixels; AppKit
