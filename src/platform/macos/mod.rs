@@ -253,6 +253,11 @@ impl WindowInner {
         // SAFETY: AppKit call on the main thread.
         // SAFETY: 主线程上的 AppKit 调用。
         unsafe { window.setReleasedWhenClosed(false) };
+        // NSWindow defaults to NOT delivering mouse-moved events; without
+        // this the backend never sees MouseMoved outside of drags.
+        // NSWindow 默认不派发 mouse-moved 事件；不开此开关，拖拽之外
+        // 永远收不到 MouseMoved。
+        window.setAcceptsMouseMovedEvents(true);
 
         // SAFETY: msg_send of `init` on a freshly allocated object.
         // SAFETY: 对新分配对象调用 `init`。
