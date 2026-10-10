@@ -80,13 +80,22 @@ mod macos {
             return 1;
         }
 
-        // 3. Inject synthetic mouse moves; expect them back through the
-        //    poll (full backend path: pump → translate → queue).
-        // 3. 注入合成鼠标移动；期望经 poll 原样返回（完整后端路径：
-        //    泵 → 翻译 → 队列）。
+        // 3. Inject synthetic mouse moves AT the window's own location —
+        //    mouse-moved events deliver to the window under the cursor, so
+        //    the injection point must land inside our frame. CG global
+        //    coords are top-left points; window.position() is physical
+        //    top-left, so pts = physical ÷ dpi_scale + small inset.
+        // 3. 在窗口自身位置注入合成鼠标移动——mouse-moved 事件派发给
+        //    光标下的窗口，注入点必须落在窗口框内。CG 全局坐标为左上
+        //    原点；window.position() 是物理左上，点 = 物理 ÷ dpi_scale
+        //    再加少量内缩。
+        let (px, py) = window.position();
+        let scale = window.dpi_scale() as f64;
+        let cg_x = px as f64 / scale + 60.0;
+        let cg_y = py as f64 / scale + 60.0;
         unsafe {
-            post_mouse_move(150.0, 150.0);
-            post_mouse_move(160.0, 160.0);
+            post_mouse_move(cg_x, cg_y);
+            post_mouse_move(cg_x + 10.0, cg_y + 10.0);
         }
 
         let mut mouse_moves = 0;
