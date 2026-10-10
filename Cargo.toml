@@ -83,6 +83,21 @@ web-sys = { version = "0.3", features = [
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6", features = ["native-activity"] }
 
+# macOS 后端：objc2 系（AppKit 绑定；类经 feature 门控，按需开启）。
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-app-kit = { version = "0.3", features = [
+    "NSApplication",
+    "NSColor",
+    "NSCursor",
+    "NSEvent",
+    "NSScreen",
+    "NSView",
+    "NSWindow",
+    "NSResponder",
+] }
+objc2-foundation = { version = "0.3", features = ["NSRunLoop", "NSProcessInfo"] }
+
 # rwh 的 Web canvas 句柄类型（WebCanvasWindowHandle）需要 wasm-bindgen-0-2
 [target.'cfg(target_family = "wasm")'.dependencies]
 raw-window-handle = { version = "0.6", features = ["wasm-bindgen-0-2"] }
@@ -92,16 +107,14 @@ raw-window-handle = { version = "0.6", features = ["wasm-bindgen-0-2"] }
 wgpu = "30.0.1"
 pollster = "1.0.1"
 
-# macOS WindowServer 探针（tests/macos_probe.rs）；后端落地后转正为依赖。
-[target.'cfg(target_os = "macos")'.dev-dependencies]
-objc2 = "0.6"
-objc2-app-kit = "0.3"
-objc2-foundation = "0.3"
-
 # 探针必须运行在进程主线程（AppKit 硬约束），而 libtest 即使
 # --test-threads=1 也在派生线程上执行测试——故禁用 harness，自管 main。
+# macOS 冒烟测试同理（经后端建窗 + CGEventPost 事件注入）。
 [[test]]
 name = "macos_probe"
+harness = false
+[[test]]
+name = "macos_smoke"
 harness = false
 
 # ── Android APK 打包配置（cargo apk build --features android-demo）──
