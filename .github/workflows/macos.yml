@@ -54,8 +54,10 @@ jobs:
           if-no-files-found: ignore
 
   ios-sim:
-    # Runs the Rust test suite inside the iOS Simulator (UIKit path).
-    # 在 iOS 模拟器内运行 Rust 测试套件（UIKit 路径）。
+    # Runs the iOS smoke test inside a booted iPhone simulator:
+    # window creation via the UIKit backend + injected-event verification.
+    # 在已启动的 iPhone 模拟器内运行 iOS 冒烟测试：
+    # 经 UIKit 后端建窗 + 注入事件验证。
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
@@ -65,10 +67,25 @@ jobs:
         with:
           targets: aarch64-apple-ios-sim
 
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
+
       - name: Compile check for iOS simulator
         run: cargo check --target aarch64-apple-ios-sim --all-features
 
-      # Deeper simulator execution lands with the iOS backend (a Rust test
-      # binary needs an app wrapper / simctl spawn harness).
-      # 更深入的模拟器执行随 iOS 后端落地（Rust 测试二进制需要 app 壳
-      # 或 simctl spawn 工装）。
+      - name: Build smoke binary
+        run: cargo build --release --target aarch64-apple-ios-sim --test ios_sim_smoke
+
+      - name: Boot an iPhone simulator
+        run: |
+          UDID=$(xcrun simctl list devices available | awk '/-- iOS/{f=1;next} f&&/ \(/ {print; exit}' | grep -oE '[A-F0-9]{8}-([A-F0-9]{4}-){3}[A-F0-9]{12}' | head -1)
+          echo "Booting simulator UDID: $UDID"
+          xcrun simctl boot "$UDID"
+          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+
+      - name: Run smoke inside the simulator
+        run: |
+          BIN=$(ls -t target/aarch64-apple-ios-sim/release/deps/ios_sim_smoke-* | grep -v '\.d$' | head -1)
+          set -euo pipefail
+          xcrun simctl spawn "$SIM_UDID" "$BIN" 2>&1 | tee sim_out.txt
+          grep -q "iOS smoke OK" sim_out.txt

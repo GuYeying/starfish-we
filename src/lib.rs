@@ -87,6 +87,15 @@ pub use platform::android::android_init;
 #[cfg(target_os = "android")]
 pub use android_activity::AndroidApp;
 
+/// (iOS builds only) Test-only event injection: feeds a synthetic event
+/// into the same buffer the OS path uses. Enables deterministic event
+/// testing on the simulator (real touch delivery is a follow-up).
+/// （仅 iOS 构建）测试用事件注入：将合成事件写入与 OS 路径相同的缓冲，
+/// 支撑模拟器上的确定性事件测试（真实触摸投递属后续项）。
+#[cfg(target_os = "ios")]
+#[doc(hidden)]
+pub use platform::ios::inject_test_event as ios_inject_test_event;
+
 /// Wait for the next frame — the per-frame yield primitive of the poll
 /// model. Call it unconditionally at the end of the application loop body.
 ///

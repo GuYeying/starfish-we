@@ -83,6 +83,21 @@ web-sys = { version = "0.3", features = [
 [target.'cfg(target_os = "android")'.dependencies]
 android-activity = { version = "0.6", features = ["native-activity"] }
 
+# iOS 后端：objc2-ui-kit 绑定（UIApplication 手动装配，v0 无生命周期委托）。
+[target.'cfg(target_os = "ios")'.dependencies]
+objc2 = "0.6"
+objc2-ui-kit = { version = "0.3", features = [
+    "UIApplication",
+    "UIWindow",
+    "UIView",
+    "UIColor",
+    "UIScreen",
+    "UIResponder",
+    "objc2-quartz-core",
+] }
+objc2-foundation = { version = "0.3", features = ["NSString", "NSRunLoop"] }
+objc2-core-foundation = "0.3"
+
 # macOS 后端：objc2 系（AppKit 绑定；类经 feature 门控，按需开启）。
 [target.'cfg(target_os = "macos")'.dependencies]
 objc2 = "0.6"
