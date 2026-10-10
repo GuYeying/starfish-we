@@ -58,6 +58,9 @@ thread_local! {
 struct Ctx {
     canvas: HtmlCanvasElement,
     shared: Rc<RefCell<Shared>>,
+    /// 上次同步时的 CSS 布尔矩形（zoom 只改 dpr 不改 CSS rect——以此为
+    /// 去重键，缩放不再重写位图属性，位图由浏览器等比缩放显示）。
+    last_css: Rc<std::cell::Cell<(f64, f64)>>,
 }
 
 struct WebState {
@@ -108,6 +111,7 @@ impl WindowInner {
         let listeners = Self::attach_listeners(&Ctx {
             canvas: canvas.clone(),
             shared: state.shared.clone(),
+            last_css: std::rc::Rc::new(std::cell::Cell::new((0.0, 0.0))),
         })?;
         if let Some(inner) = Rc::get_mut(&mut state) {
             inner._listeners = listeners;
@@ -193,12 +197,10 @@ impl WindowInner {
 
     pub(crate) fn set_resizable(&self, _resizable: bool) {
         // The browser window's size is managed by the user / page layout:
-        // canvas offers no resize handle.
-        // 浏览器窗口尺寸由用户/页面管理：canvas 不提供 resize 把手
-        Self::warn_once(
-            "resizable",
-            "[starfish-window] web: RESIZABLE is decided by the page layout; ignored / 由页面布局决定,忽略",
-        );
+        // canvas offers no resize handle. Silent no-op (by design, not a
+        // misuse — pygame set_mode(RESIZABLE) is a normal call).
+        // 浏览器窗口尺寸由用户/页面管理：canvas 不提供 resize 把手。
+        // 设计性 no-op（pygame set_mode(RESIZABLE) 是正常调用），静默。
     }
 
     pub(crate) fn is_resizable(&self) -> bool {
@@ -641,12 +643,21 @@ impl WindowInner {
         // Resized when the physical size actually changed (DevTools
         // docking / browser zoom frequently fire same-size resizes;
         // without dedup the app side would do pointless surface rebuilds).
-        // 窗口尺寸变化：先同步画布分辨率，物理尺寸真的变了才上报
-        // Resized（DevTools 停靠/浏览器缩放常触发同尺寸 resize，不去重
-        // 会让应用侧做无意义的 surface 重建）。
+        // 批次二十四：去重键升级为 **CSS 布尔矩形**——浏览器缩放（Ctrl+
+        // 滚轮）只改 dpr、不改 CSS rect，早期“属性变化”判定会被 dpr 击穿
+        // → 位图属性重写（浏览器清空位图）→ 内容切割/闪。CSS rect 不变时
+        // 整个跳过：位图不动，浏览器把既有位图等比缩放显示（缩放时内容
+        // 相对缩放，零切割零闪烁）。真实窗口尺寸变化（rect 变）才走完整
+        // 同步 + Resized 链。
         {
             let ctx = ctx.clone();
             listeners.push(add_listener(js_window.as_ref(), "resize", move |_| {
+                let rect = ctx.canvas.get_bounding_client_rect();
+                let css = (rect.width().round(), rect.height().round());
+                if css == ctx.last_css.get() {
+                    return; // 仅 dpr/缩放变化：位图不动，浏览器等比缩放
+                }
+                ctx.last_css.set(css);
                 if Self::sync_canvas_size(&ctx.canvas) {
                     let (width, height) = Self::measure(&ctx.canvas);
                     ctx.shared
@@ -687,12 +698,7 @@ fn add_listener<F>(
 where
     F: FnMut(JsValue) + 'static,
 {
-    let mut handler = handler;
-    let ty_owned = ty.to_string();
-    let closure = Closure::wrap(Box::new(move |v| {
-        web_sys::console::log_1(&format!("[listener] {ty_owned}").into());
-        handler(v)
-    }) as Box<dyn FnMut(JsValue)>);
+    let closure = Closure::wrap(Box::new(handler) as Box<dyn FnMut(JsValue)>);
     target
         .add_event_listener_with_callback(ty, closure.as_ref().unchecked_ref())
         .map_err(|_| {

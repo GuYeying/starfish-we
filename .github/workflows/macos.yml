@@ -21,6 +21,9 @@ jobs:
         with:
           targets: aarch64-apple-darwin,aarch64-apple-ios-sim
 
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
+
       - name: Host compile matrix (macOS + iOS sim targets)
         run: |
           set -euxo pipefail
@@ -29,7 +32,13 @@ jobs:
           cargo check --target aarch64-apple-ios-sim --all-features
 
       - name: WindowServer probe (real NSApplication + NSWindow)
-        run: cargo test --release --test macos_probe -- --nocapture
+        # --test-threads=1: libtest then runs tests inline on the MAIN
+        # thread — required for MainThreadMarker (AppKit is main-thread
+        # only; the default multi-thread harness broke the probe).
+        # --test-threads=1：libtest 会在主线程内联执行测试——
+        # MainThreadMarker 需要（AppKit 仅限主线程；默认多线程 harness
+        # 会让探针拿不到标记）。
+        run: cargo test --release --test macos_probe -- --test-threads=1 --nocapture
 
       - name: Full test suite
         run: cargo test --release
