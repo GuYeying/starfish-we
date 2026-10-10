@@ -8,20 +8,45 @@
 //! visual confirmation that the window is really on screen.
 //! 成功后留 `target/probe.png`（作为 CI artifact 上传）：
 //! 窗口真实上屏的视觉证据。
+//!
+//! `harness = false` (see Cargo.toml): AppKit is main-thread-only, and
+//! libtest runs tests on spawned worker threads even with
+//! `--test-threads=1` — so this probe manages its own `main` and thereby
+//! runs on the process's real main thread.
+//! `harness = false`（见 Cargo.toml）：AppKit 仅限主线程，而 libtest 即使
+//! `--test-threads=1` 也在派生线程上执行测试——所以探针自管 `main`，
+//! 从而跑在进程真正的主线程上。
+//!
+//! Non-macOS platforms compile a skipping stub (the objc2 dev-deps are
+//! macOS-gated).
+//! 非 macOS 平台编译为跳过桩（objc2 dev 依赖仅限 macOS）。
 
-#![cfg(target_os = "macos")]
+#[cfg(not(target_os = "macos"))]
+fn main() {
+    println!("skipped: macOS-only probe / 非 macOS 平台跳过");
+}
 
-use objc2_app_kit::{
-    NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSWindow, NSWindowStyleMask,
-};
-use objc2_foundation::{MainThreadMarker, NSRect, ns_string};
+#[cfg(target_os = "macos")]
+fn main() {
+    std::process::exit(run());
+}
 
-#[test]
-fn macos_runner_can_create_a_real_window() {
-    // Rust's test harness runs on the main thread — a MainThreadMarker is
-    // available.
-    // Rust 测试 harness 跑在主线程上——MainThreadMarker 可用。
-    let mtm = MainThreadMarker::new().expect("not on the main thread / 不在主线程");
+#[cfg(target_os = "macos")]
+fn run() -> i32 {
+    use objc2_app_kit::{
+        NSApplication, NSApplicationActivationPolicy, NSBackingStoreType, NSWindow,
+        NSWindowStyleMask,
+    };
+    use objc2_foundation::{MainThreadMarker, NSRect, ns_string};
+
+    // Rust's test harness is bypassed (harness = false): this main runs on
+    // the process's real main thread — a MainThreadMarker is available.
+    // 绕过了测试 harness（harness = false）：本 main 跑在进程真正的主线程
+    // 上——MainThreadMarker 可用。
+    let Some(mtm) = MainThreadMarker::new() else {
+        eprintln!("not on the main thread / 不在主线程");
+        return 1;
+    };
 
     // Bring up the app (regular, docked — like a real windowed app).
     // 拉起应用（Regular 激活策略，与真实窗口应用一致）。
@@ -48,11 +73,14 @@ fn macos_runner_can_create_a_real_window() {
     window.makeKeyAndOrderFront(None);
     window.setIsVisible(true);
 
-    assert!(
-        window.isVisible(),
-        "window did not become visible / 窗口未能上屏"
-    );
-    assert_eq!(window.title().to_string(), "starfish probe");
+    if !window.isVisible() {
+        eprintln!("window did not become visible / 窗口未能上屏");
+        return 1;
+    }
+    if window.title().to_string() != "starfish probe" {
+        eprintln!("window title mismatch / 窗口标题不符");
+        return 1;
+    }
 
     // Screenshot: visual proof in the CI artifacts.
     // 截图：CI artifact 里的视觉证据。
@@ -62,6 +90,15 @@ fn macos_runner_can_create_a_real_window() {
         .arg(out)
         .status()
         .expect("failed to spawn screencapture / 启动 screencapture 失败");
-    assert!(status.success(), "screencapture failed / 截屏失败");
-    assert!(out.exists(), "probe screenshot missing / 探针截图不存在");
+    if !status.success() {
+        eprintln!("screencapture failed / 截屏失败");
+        return 1;
+    }
+    if !out.exists() {
+        eprintln!("probe screenshot missing / 探针截图不存在");
+        return 1;
+    }
+
+    println!("probe OK: real NSWindow created and on screen / 探针通过：真实窗口已上屏");
+    0
 }

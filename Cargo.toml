@@ -98,6 +98,12 @@ objc2 = "0.6"
 objc2-app-kit = "0.3"
 objc2-foundation = "0.3"
 
+# 探针必须运行在进程主线程（AppKit 硬约束），而 libtest 即使
+# --test-threads=1 也在派生线程上执行测试——故禁用 harness，自管 main。
+[[test]]
+name = "macos_probe"
+harness = false
+
 # ── Android APK 打包配置（cargo apk build --features android-demo）──
 [package.metadata.android]
 package = "com.starfish.window_demo"
