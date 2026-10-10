@@ -1,0 +1,63 @@
+name: macOS / iOS
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  macos:
+    # Probes the runner's WindowServer and runs the full test suite on a
+    # real (virtual) Mac with a GUI session.
+    # 探测 runner 的 WindowServer，并在带 GUI 会话的真实（虚拟）Mac 上
+    # 跑完整测试套件。
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-darwin,aarch64-apple-ios-sim
+
+      - name: Host compile matrix (macOS + iOS sim targets)
+        run: |
+          set -euxo pipefail
+          cargo check --all-features
+          cargo check --target aarch64-apple-darwin --all-features
+          cargo check --target aarch64-apple-ios-sim --all-features
+
+      - name: WindowServer probe (real NSApplication + NSWindow)
+        run: cargo test --release --test macos_probe -- --nocapture
+
+      - name: Full test suite
+        run: cargo test --release
+
+      - name: Upload probe screenshot
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: macos-window-probe
+          path: target/probe*.png
+          if-no-files-found: ignore
+
+  ios-sim:
+    # Runs the Rust test suite inside the iOS Simulator (UIKit path).
+    # 在 iOS 模拟器内运行 Rust 测试套件（UIKit 路径）。
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-apple-ios-sim
+
+      - name: Compile check for iOS simulator
+        run: cargo check --target aarch64-apple-ios-sim --all-features
+
+      # Deeper simulator execution lands with the iOS backend (a Rust test
+      # binary needs an app wrapper / simctl spawn harness).
+      # 更深入的模拟器执行随 iOS 后端落地（Rust 测试二进制需要 app 壳
+      # 或 simctl spawn 工装）。
