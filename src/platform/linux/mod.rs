@@ -38,9 +38,16 @@
 //! `delegate_dispatch2!` — see the bottom of this file.
 
 use std::collections::VecDeque;
-use std::sync::{Mutex, MutexGuard};
+use std::num::NonZeroU32;
+use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, Instant};
 
+use sctk_adwaita::{AdwaitaFrame, FrameConfig};
+use smithay_client_toolkit::reexports::csd_frame::{
+    CursorIcon, DecorationsFrame, FrameAction, FrameClick, ResizeEdge as CsdResizeEdge,
+};
+use smithay_client_toolkit::reexports::protocols::xdg::shell::client::xdg_toplevel::ResizeEdge as XdgResizeEdge;
+use smithay_client_toolkit::subcompositor::SubcompositorState;
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_registry,
@@ -53,12 +60,14 @@ use smithay_client_toolkit::{
         keyboard::{
             KeyEvent, KeyboardHandler, Keysym, Modifiers as SctkModifiers, RawModifiers, RepeatInfo,
         },
-        pointer::{PointerEvent, PointerEventKind, PointerHandler},
+        pointer::{
+            PointerData, PointerEvent, PointerEventKind, PointerHandler, ThemeSpec, ThemedPointer,
+        },
     },
     shell::{
         WaylandSurface,
         xdg::{
-            XdgShell,
+            XdgShell, XdgSurface,
             window::{
                 DecorationMode, Window as SctkWindow, WindowConfigure, WindowDecorations,
                 WindowHandler,
@@ -96,9 +105,22 @@ struct WaylandState {
     registry_state: RegistryState,
     seat_state: SeatState,
     output_state: OutputState,
+    /// Kept as an `Arc` — the CSD frame needs a clone of it.
+    /// 以 `Arc` 持有——CSD 装饰框需要它的克隆。
+    compositor: Arc<CompositorState>,
     shm: Shm,
     window: SctkWindow,
     pool: SlotPool,
+    /// Adwaita client-side decorations (Some means drawn as subsurfaces).
+    /// Adwaita 客户端装饰（Some 表示以子表面绘制）。
+    frame: Option<AdwaitaFrame<WaylandState>>,
+    /// Pointer with a cursor theme — drives the resize-edge cursor icons
+    /// the frame requests.
+    /// 带光标主题的指针——响应装饰框请求的缩放边缘光标。
+    themed_pointer: Option<ThemedPointer<WaylandState>>,
+    /// Title text mirror for the frame (set before the frame exists).
+    /// 装饰框的标题文本镜像（框创建前先行保存）。
+    title: String,
     /// The buffer currently attached to the surface; reset on every
     /// configure (size changed) — SlotPool double-buffers the
     /// not-yet-released previous frame.
@@ -128,7 +150,6 @@ struct WaylandState {
     /// 键盘焦点在本 surface 上（wl_keyboard enter/leave）。
     keyboard_focus: bool,
     keyboard: Option<wl_keyboard::WlKeyboard>,
-    pointer: Option<wl_pointer::WlPointer>,
     /// Snapshot of the last `update_modifiers` (event-time semantics).
     /// 最近一次 `update_modifiers` 的快照（事件时语义）。
     modifiers: SctkModifiers,
@@ -197,6 +218,14 @@ impl WaylandState {
         canvas.chunks_exact_mut(4).for_each(|chunk| {
             chunk.copy_from_slice(&[0x2E, 0x2A, 0x2A, 0xFF]);
         });
+        // Draw the CSD decorations — their subsurfaces sync with this
+        // commit.
+        // 绘制 CSD 装饰——其子表面与本提交同步。
+        if let Some(frame) = self.frame.as_mut() {
+            if frame.is_dirty() && !frame.is_hidden() {
+                frame.draw();
+            }
+        }
         self.window
             .wl_surface()
             .damage_buffer(0, 0, w as i32, h as i32);
@@ -289,8 +318,16 @@ impl WindowInner {
 
         // 3. Bind the globals we cannot live without.
         // 3. 绑定不可或缺的全局。
-        let compositor = CompositorState::bind(&globals, &qh).map_err(|_| {
+        let compositor = Arc::new(CompositorState::bind(&globals, &qh).map_err(|_| {
             WindowError::OsError("wl_compositor not available / wl_compositor 不可用".into())
+        })?);
+        let subcompositor = SubcompositorState::bind(
+            compositor.wl_compositor().clone(),
+            &globals,
+            &qh,
+        )
+        .map_err(|_| {
+            WindowError::OsError("wl_subcompositor not available / wl_subcompositor 不可用".into())
         })?;
         let xdg_shell = XdgShell::bind(&globals, &qh).map_err(|_| {
             WindowError::OsError(
@@ -352,9 +389,13 @@ impl WindowInner {
             registry_state: RegistryState::new(&globals),
             seat_state: SeatState::new(&globals, &qh),
             output_state: OutputState::new(&globals, &qh),
+            compositor: compositor.clone(),
             shm,
             window,
             pool,
+            frame: None,
+            themed_pointer: None,
+            title: options.title.clone(),
             buffer: None,
             logical_w: req_w,
             logical_h: req_h,
@@ -365,7 +406,6 @@ impl WindowInner {
             borderless: options.borderless,
             keyboard_focus: false,
             keyboard: None,
-            pointer: None,
             modifiers: SctkModifiers {
                 ctrl: false,
                 alt: false,
@@ -495,7 +535,11 @@ impl WindowInner {
     pub(crate) fn set_title(&self, title: &str) {
         let mut core = self.lock_core();
         core.title = title.to_string();
+        core.state.title = title.to_string();
         core.state.window.set_title(title.to_string());
+        if let Some(frame) = core.state.frame.as_mut() {
+            frame.set_title(title.to_string());
+        }
     }
 
     pub(crate) fn title(&self) -> String {
@@ -759,6 +803,9 @@ impl CompositorHandler for WaylandState {
     ) {
         if self.scale != new_factor {
             self.scale = new_factor;
+            if let Some(frame) = self.frame.as_mut() {
+                frame.set_scaling_factor(f64::from(new_factor));
+            }
             self.buffer = None;
             let (w, h) = self.physical_size();
             self.pending.push_back(Event::Resized {
@@ -862,12 +909,69 @@ impl WindowHandler for WaylandState {
         // 上一帧。
         self.buffer = None;
         let old = (self.logical_w, self.logical_h);
-        if let Some(w) = configure.new_size.0 {
-            self.logical_w = w.get();
-        }
-        if let Some(h) = configure.new_size.1 {
-            self.logical_h = h.get();
-        }
+
+        // Server-side decorations (KWin & co.) draw the frame themselves.
+        // Client mode (Mutter lacks xdg-decoration) uses our Adwaita frame.
+        // 服务端装饰（KWin 等）由合成器绘制；Client 模式（Mutter 无
+        // xdg-decoration）则用我们的 Adwaita 框。
+        let (content_w, content_h) = if configure.decoration_mode == DecorationMode::Client {
+            let frame = self.frame.get_or_insert_with(|| {
+                let mut frame = AdwaitaFrame::new(
+                    &self.window,
+                    &self.shm,
+                    self.compositor.clone(),
+                    self.subcompositor.clone(),
+                    qh.clone(),
+                    FrameConfig::auto(),
+                )
+                .expect("create Adwaita CSD frame / 创建 Adwaita CSD 装饰框失败");
+                frame.set_title(self.title.clone());
+                frame.set_scaling_factor(f64::from(self.scale.max(1)));
+                frame
+            });
+            frame.set_hidden(false);
+            frame.update_state(configure.state);
+            frame.update_wm_capabilities(configure.capabilities);
+            let (cw, ch) = match configure.new_size {
+                (Some(w), Some(h)) => frame.subtract_borders(w, h),
+                _ => (
+                    NonZeroU32::new(self.logical_w),
+                    NonZeroU32::new(self.logical_h),
+                ),
+            };
+            let cw = cw.unwrap_or(NonZeroU32::new(1).unwrap());
+            let ch = ch.unwrap_or(NonZeroU32::new(1).unwrap());
+            frame.resize(cw, ch);
+            // Exclude the titlebar strip from the toplevel geometry.
+            // 把标题栏区域从 toplevel 几何中排除。
+            let (x, y) = frame.location();
+            let (outer_w, outer_h) = frame.add_borders(cw.get(), ch.get());
+            self.window
+                .xdg_surface()
+                .set_window_geometry(x, y, outer_w as i32, outer_h as i32);
+            (cw.get(), ch.get())
+        } else {
+            if let Some(frame) = self.frame.as_mut() {
+                frame.set_hidden(true);
+            }
+            let w = configure
+                .new_size
+                .0
+                .map(|v| v.get())
+                .unwrap_or(self.logical_w);
+            let h = configure
+                .new_size
+                .1
+                .map(|v| v.get())
+                .unwrap_or(self.logical_h);
+            self.window
+                .xdg_surface()
+                .set_window_geometry(0, 0, w as i32, h as i32);
+            (w, h)
+        };
+
+        self.logical_w = content_w;
+        self.logical_h = content_h;
         self.fullscreen = configure.state.contains(WindowState::FULLSCREEN);
         self.maximized = configure.state.contains(WindowState::MAXIMIZED);
         self.borderless = configure.decoration_mode == DecorationMode::Client;
@@ -912,8 +1016,22 @@ impl SeatHandler for WaylandState {
                 // repeat 辅助器被 calloop 门控，重复我们自行合成。
                 self.keyboard = self.seat_state.get_keyboard(qh, &seat, None).ok();
             }
-            Capability::Pointer if self.pointer.is_none() => {
-                self.pointer = self.seat_state.get_pointer(qh, &seat).ok();
+            Capability::Pointer if self.themed_pointer.is_none() => {
+                // Themed pointer: the frame's resize-edge cursor icons
+                // need a cursor surface + theme to render through.
+                // 主题指针：装饰框的缩放边缘光标需要 cursor surface +
+                // 主题才能渲染。
+                let cursor_surface = self.compositor.create_surface(qh);
+                self.themed_pointer = self
+                    .seat_state
+                    .get_pointer_with_theme(
+                        qh,
+                        &seat,
+                        self.shm.wl_shm(),
+                        cursor_surface,
+                        ThemeSpec::default(),
+                    )
+                    .ok();
             }
             _ => {}
         }
@@ -938,8 +1056,8 @@ impl SeatHandler for WaylandState {
                 }
             }
             Capability::Pointer => {
-                if let Some(pointer) = self.pointer.take() {
-                    pointer.release();
+                if let Some(pointer) = self.themed_pointer.take() {
+                    pointer.pointer().release();
                 }
             }
             _ => {}
@@ -1075,48 +1193,108 @@ impl KeyboardHandler for WaylandState {
 impl PointerHandler for WaylandState {
     fn pointer_frame(
         &mut self,
-        _conn: &Connection,
+        conn: &Connection,
         _qh: &QueueHandle<Self>,
-        _pointer: &wl_pointer::WlPointer,
+        pointer: &wl_pointer::WlPointer,
         events: &[PointerEvent],
     ) {
         use PointerEventKind::*;
         for event in events {
-            // Events for other surfaces are not ours to translate.
-            // 其他 surface 的事件不归我们翻译。
-            if event.surface != *self.window.wl_surface() {
-                continue;
-            }
+            let (x, y) = event.position;
+            let on_content = event.surface == *self.window.wl_surface();
             let scale = self.scale.max(1);
             match event.kind {
-                Enter { .. } | Leave { .. } => {}
-                Motion { .. } => {
-                    // Logical → physical pixels.
-                    // 逻辑 → 物理像素。
-                    self.pending.push_back(Event::MouseMoved {
-                        x: event.position.0 * f64::from(scale),
-                        y: event.position.1 * f64::from(scale),
-                    });
+                Enter { .. } => {
+                    // The frame tracks hover over its own subsurfaces
+                    // (edges/buttons) and reports the matching cursor icon.
+                    // 装饰框会追踪其子表面（边缘/按钮）上的悬停并给出对应
+                    // 光标图标。
+                    if let Some(icon) = self.frame.as_mut().and_then(|frame| {
+                        frame.click_point_moved(Duration::ZERO, &event.surface.id(), x, y)
+                    }) {
+                        if let Some(tp) = self.themed_pointer.as_mut() {
+                            let _ = tp.set_cursor(conn, icon);
+                        }
+                    }
+                    if on_content {
+                        self.pending.push_back(Event::MouseMoved {
+                            x: x * f64::from(scale),
+                            y: y * f64::from(scale),
+                        });
+                    }
                 }
-                Press { button, .. } => {
-                    self.pending.push_back(Event::MouseDown {
-                        button: translate::mouse_button(button),
-                    });
+                Leave { .. } => {
+                    if !on_content {
+                        if let Some(frame) = self.frame.as_mut() {
+                            frame.click_point_left();
+                        }
+                    }
                 }
-                Release { button, .. } => {
-                    self.pending.push_back(Event::MouseUp {
-                        button: translate::mouse_button(button),
-                    });
+                Motion { time } => {
+                    if let Some(icon) = self.frame.as_mut().and_then(|frame| {
+                        frame.click_point_moved(
+                            Duration::from_millis(u64::from(time)),
+                            &event.surface.id(),
+                            x,
+                            y,
+                        )
+                    }) {
+                        if let Some(tp) = self.themed_pointer.as_mut() {
+                            let _ = tp.set_cursor(conn, icon);
+                        }
+                    }
+                    if on_content {
+                        self.pending.push_back(Event::MouseMoved {
+                            x: x * f64::from(scale),
+                            y: y * f64::from(scale),
+                        });
+                    }
+                }
+                Press {
+                    button,
+                    serial,
+                    time,
+                }
+                | Release {
+                    button,
+                    serial,
+                    time,
+                } => {
+                    let pressed = matches!(event.kind, Press { .. });
+                    if on_content {
+                        // Content press/release: plain mouse events.
+                        // 内容区按下/松开：普通鼠标事件。
+                        self.pending.push_back(if pressed {
+                            Event::MouseDown {
+                                button: translate::mouse_button(button),
+                            }
+                        } else {
+                            Event::MouseUp {
+                                button: translate::mouse_button(button),
+                            }
+                        });
+                    } else if let Some(action) = self.frame.as_mut().and_then(|frame| {
+                        frame.on_click(
+                            Duration::from_millis(u64::from(time)),
+                            frame_click(button),
+                            pressed,
+                        )
+                    }) {
+                        self.frame_action(pointer, serial, action);
+                    }
                 }
                 Axis {
                     horizontal,
                     vertical,
                     ..
                 } => {
-                    // wl vertical axis: positive = scroll DOWN → our
+                    if !on_content {
+                        continue;
+                    }
+                    // wl vertical axis: positive = scroll DOWN; our
                     // convention is positive = UP, so negate. Horizontal
                     // already matches (positive = right).
-                    // wl 垂直轴：正 = 向下滚 → 本库约定正 = 向上，取负。
+                    // wl 垂直轴：正 = 向下滚；本库约定正 = 向上，取负。
                     // 水平轴本就一致（正 = 向右）。
                     if horizontal.value120 != 0 || horizontal.discrete != 0 {
                         self.pending.push_back(Event::MouseWheel {
@@ -1135,6 +1313,62 @@ impl PointerHandler for WaylandState {
                     }
                 }
             }
+        }
+    }
+}
+
+/// Evdev left/right buttons → the frame's click kinds; other buttons
+/// don't participate in decoration interactions.
+/// evdev 左/右键 → 装饰框点击类型；其余按键不参与装饰交互。
+fn frame_click(button: u32) -> FrameClick {
+    match button {
+        0x111 => FrameClick::Alternate,
+        _ => FrameClick::Normal,
+    }
+}
+
+impl WaylandState {
+    /// Executes a CSD frame action (close / minimize / maximize / drag /
+    /// resize) using the seat + serial of the originating click.
+    /// 用发起点击的 seat + serial 执行 CSD 装饰框动作（关闭/最小化/
+    /// 最大化/拖拽/缩放）。
+    fn frame_action(&mut self, pointer: &wl_pointer::WlPointer, serial: u32, action: FrameAction) {
+        let seat = pointer
+            .data::<PointerData>()
+            .map(|data| data.seat().clone());
+        match action {
+            FrameAction::Close => self.pending.push_back(Event::CloseRequested),
+            FrameAction::Minimize => self.window.set_minimized(),
+            FrameAction::Maximize => self.window.set_maximized(),
+            FrameAction::UnMaximize => self.window.unset_maximized(),
+            FrameAction::ShowMenu(x, y) => {
+                if let Some(seat) = &seat {
+                    self.window.show_window_menu(seat, serial, (x, y));
+                }
+            }
+            FrameAction::Resize(edge) => {
+                if let Some(seat) = &seat {
+                    let edge = match edge {
+                        CsdResizeEdge::None => XdgResizeEdge::None,
+                        CsdResizeEdge::Top => XdgResizeEdge::Top,
+                        CsdResizeEdge::Bottom => XdgResizeEdge::Bottom,
+                        CsdResizeEdge::Left => XdgResizeEdge::Left,
+                        CsdResizeEdge::Right => XdgResizeEdge::Right,
+                        CsdResizeEdge::TopLeft => XdgResizeEdge::TopLeft,
+                        CsdResizeEdge::TopRight => XdgResizeEdge::TopRight,
+                        CsdResizeEdge::BottomLeft => XdgResizeEdge::BottomLeft,
+                        CsdResizeEdge::BottomRight => XdgResizeEdge::BottomRight,
+                        _ => return,
+                    };
+                    self.window.resize(seat, serial, edge);
+                }
+            }
+            FrameAction::Move => {
+                if let Some(seat) = &seat {
+                    self.window.move_(seat, serial);
+                }
+            }
+            _ => {}
         }
     }
 }

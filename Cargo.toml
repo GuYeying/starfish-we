@@ -126,6 +126,7 @@ smithay-client-toolkit = { version = "0.21", default-features = false, features 
     "xkbcommon",
     "system",
 ] }
+sctk-adwaita = "0.12.0"
 
 # rwh 的 Web canvas 句柄类型（WebCanvasWindowHandle）需要 wasm-bindgen-0-2
 [target.'cfg(target_family = "wasm")'.dependencies]
