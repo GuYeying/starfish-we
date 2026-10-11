@@ -125,8 +125,22 @@ mod ios {
 }
 
 fn main() {
+    // Earliest marker: proves the process actually launched.
+    // 最早标记：证明进程确实启动了。
+    #[cfg(target_os = "ios")]
+    {
+        
+        let tmp = unsafe { objc2_foundation::NSTemporaryDirectory() }.to_string();
+        let _ = std::fs::write(format!("{tmp}result.txt"), "STARTED");
+    }
+
     #[cfg(target_os = "ios")]
     starfish_window::ios_main!(ios::tick);
+    #[cfg(not(target_os = "ios"))]
+    {
+        println!("skipped: iOS-only smoke / 非 iOS 平台跳过");
+    }
+}
     #[cfg(not(target_os = "ios"))]
     {
         println!("skipped: iOS-only smoke / 非 iOS 平台跳过");
