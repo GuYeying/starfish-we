@@ -366,6 +366,7 @@ WSLg 可实测）后 Wayland 横向拆分。落地前**不要**对该端做出�
 | Windows | 全套冒烟 | `cargo test` |
 | macOS | CI 冒烟（真实 Mac runner：探针+全套件） | push 后 `gh run watch`（`.github/workflows/macos.yml` 的 `macos` job） |
 | iOS | CI 模拟器冒烟（建窗+注入往返） | 同上的 `ios-sim` job；失败看 result.txt 终态 + `sim_stderr.txt` artifact |
+| Linux | CI 编译矩阵 + stub 契约测试 | push 后 `gh run watch`（`.github/workflows/linux.yml` 的 `linux` job） |
 | Android | 事件/生命周期日志 | `adb logcat -s starfish`；panic 另加 `RustStdoutStderr` |
 | Android | 打包安装 | `export ANDROID_NDK_ROOT=<ndk> && cargo apk build --features android-demo && adb install -r target/debug/apk/starfish-demo.apk` |
 | Web | 页面日志 + console | `python -m http.server 8000 -d testweb` → http://localhost:8000 （`scripts/build_web.sh` 重打包） |
@@ -387,7 +388,7 @@ WSLg 可实测）后 Wayland 横向拆分。落地前**不要**对该端做出�
 | iOS | ~60%（v0：建窗+帧驱动+注入通道；缺：真实触摸、生命周期、键盘/TextInput、真机验证） | CI 模拟器冒烟 ✅（注入事件往返）；真机待验 |
 | Android | ~90%（缺：GameActivity、手势导航、软键盘控制 API、saveInstanceState） | 模拟器实测（四轮快打 0 panic）；真机待复测 |
 | Web | ~85%（缺：IME、rwh Web 注册表、wheel preventDefault） | 事件层已经人肉点验 ✅；wgpu-WebGPU 链路未跑通 |
-| Linux | 0%（stub） | 仅编译 |
+| Linux | 0%（stub） | CI 编译矩阵 + 单测（stub 契约）✅ |
 
 版本事实：raw-window-handle **0.6**（`#[non_exhaustive]`，用 `new()` 构造器；
 `WindowsDisplayHandle`/`AndroidDisplayHandle` 是空结构；Android 变体名是

@@ -1,0 +1,51 @@
+name: Linux
+
+on:
+  push:
+    branches: [master, main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  linux:
+    # The Linux backend is still a stub: this job pins the CI floor for
+    # it — the full compile matrix, the backend-less test suite (unit
+    # tests + the stub contract in tests/stub_platform.rs) and a wasm
+    # cross-check — so the future X11 backend lands onto an already
+    # watched, green platform.
+    # Linux 后端仍是 stub：本 job 为它钉住 CI 下限——完整编译矩阵、
+    # 无后端即可运行的测试套件（单测 + tests/stub_platform.rs 的 stub
+    # 契约）以及 wasm 交叉检查——让将来的 X11 后端落地时接手的是
+    # 一个已被看守的绿平台。
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
+
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Compile matrix (all / default / no-default features)
+        run: |
+          set -euxo pipefail
+          cargo check --all-features
+          cargo check
+          cargo check --no-default-features
+
+      - name: Test suite (backend-less: unit tests + stub contract)
+        # The platform smoke tests are cfg'd out per platform; on Linux
+        # this runs the lib unit tests, ios_sim_smoke (prints "skipped")
+        # and tests/stub_platform.rs.
+        # 平台冒烟测试均按平台 cfg 排除；Linux 上运行库内单测、
+        # ios_sim_smoke（打印 "skipped"）与 tests/stub_platform.rs。
+        run: cargo test --release --no-fail-fast
+
+      - name: Web target cross-check
+        # The wasm compile gate previously lived only on dev machines;
+        # host it here so it is checked on every push.
+        # wasm 编译门此前只在开发机上手动执行；挂到这里每次 push 都查。
+        run: cargo check --target wasm32-unknown-unknown --all-features

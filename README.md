@@ -64,7 +64,8 @@ loop {
 | Linux | — | — | — | planned (stub) |
 
 Every push runs the macOS + iOS-simulator smoke matrix on GitHub's Mac
-runners (`.github/workflows/macos.yml`).
+runners (`.github/workflows/macos.yml`) and the Linux compile + test
+floor (`.github/workflows/linux.yml`, backend still a stub).
 
 Platform driving principles, the event semantics matrix, caveats and
 diagnostics live in the

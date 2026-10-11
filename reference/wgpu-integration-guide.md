@@ -428,6 +428,7 @@ green (the event/type layer is fully usable). Plan: X11 first
 | Windows | full smoke suite | `cargo test` |
 | macOS | CI smoke (real Mac runner: probe + full suite) | after push, `gh run watch` (the `macos` job of `.github/workflows/macos.yml`) |
 | iOS | CI simulator smoke (window + injected roundtrip) | the `ios-sim` job of the same workflow; on failure read the result.txt terminal state + the `sim_stderr.txt` artifact |
+| Linux | CI compile matrix + stub-contract tests | after push, `gh run watch` (the `linux` job of `.github/workflows/linux.yml`) |
 | Android | event / lifecycle logs | `adb logcat -s starfish`; panics additionally under `RustStdoutStderr` |
 | Android | build + install | `export ANDROID_NDK_ROOT=<ndk> && cargo apk build --features android-demo && adb install -r target/debug/apk/starfish-demo.apk` |
 | Web | page overlay + console | `python -m http.server 8000 -d testweb` → http://localhost:8000 (`scripts/build_web.sh` repackages) |
@@ -452,7 +453,7 @@ after the platform's own readiness signal.
 | iOS | ~60% (v0: window + frame driver + injection channel; missing: real touch, lifecycle, keyboard/TextInput, real-device verification) | CI simulator smoke ✅ (injected-event roundtrip); real device pending |
 | Android | ~90% (missing: GameActivity, gesture nav, soft-input control API, saveInstanceState) | emulator-tested (4 rapid relaunch cycles, 0 panics); real device pending |
 | Web | ~85% (missing: IME, rwh Web registry, wheel preventDefault) | event layer manually verified ✅; the wgpu-WebGPU path not yet exercised |
-| Linux | 0% (stub) | compile-only |
+| Linux | 0% (stub) | CI compile matrix + unit tests (stub contract) ✅ |
 
 Version facts: raw-window-handle **0.6** (`#[non_exhaustive]`; use the
 `new()` constructors; `WindowsDisplayHandle` / `AndroidDisplayHandle` are

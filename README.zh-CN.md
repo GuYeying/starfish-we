@@ -57,7 +57,8 @@ loop {
 | Linux | — | — | — | 计划中（stub） |
 
 每次 push 都会在 GitHub 的 Mac runner 上跑 macOS + iOS 模拟器冒烟矩阵
-（`.github/workflows/macos.yml`）。
+（`.github/workflows/macos.yml`），以及 Linux 编译 + 测试下限
+（`.github/workflows/linux.yml`，后端仍为 stub）。
 
 各平台驱动原理、事件语义矩阵、注意事项与诊断手段见
 [`reference/wgpu接入指南.md`](reference/wgpu接入指南.md)
