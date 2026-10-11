@@ -56,15 +56,23 @@ pub enum RawWindowHandle {
         /// 视图的 `CALayer *`。
         layer: *mut c_void,
     },
-    /// Linux (X11): the display connection and the window id.
-    /// Linux (X11)：显示连接与窗口 id。
-    Xlib {
-        /// `Display *`.
-        /// `Display *`。
+    /// Linux (Wayland-only): the display connection and the window
+    /// surface.
+    /// Linux（仅 Wayland）：显示连接与窗口 surface。
+    ///
+    /// Raw libwayland pointers — the Linux backend uses wayland-client's
+    /// `system` backend precisely so these exist (the pure-Rust backend
+    /// has no display pointer, which wgpu's Wayland path requires).
+    /// 裸 libwayland 指针——Linux 后端特意选用 wayland-client 的
+    /// `system` 后端正是为了让这两个指针存在（纯 Rust 后端没有 display
+    /// 指针，wgpu 的 Wayland 路径必需）。
+    Wayland {
+        /// `wl_display *`.
+        /// `wl_display *`。
         display: *mut c_void,
-        /// The X `Window` id.
-        /// `Window`（X 窗口 id）。
-        window: u64,
+        /// `wl_surface *` of the window's surface.
+        /// 窗口 surface 的 `wl_surface *`。
+        surface: *mut c_void,
     },
     /// Android: `ANativeWindow *`.
     /// Android：`ANativeWindow *`。

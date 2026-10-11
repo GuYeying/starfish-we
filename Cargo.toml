@@ -114,6 +114,19 @@ objc2-app-kit = { version = "0.3", features = [
 ] }
 objc2-foundation = { version = "0.3", features = ["NSRunLoop", "NSProcessInfo"] }
 
+# Linux 后端：Wayland-only（X11 已弃）。
+# - system：wgpu 互操作需要真实 wl_display*/wl_surface* 指针（纯 Rust 后端没有）。
+# - dlopen：运行期加载 libwayland，免去链接期系统依赖。
+# - sctk 关 calloop（本库 poll 模型自带非阻塞泵），留 xkbcommon（键位映射/文本合成；
+#   C 链接依赖，构建需 pkg-config + libxkbcommon-dev —— Windows 主机无法交叉检查
+#   Linux target，Linux 编译验证全部由 linux.yml 承担）。
+[target.'cfg(target_os = "linux")'.dependencies]
+wayland-client = { version = "0.31", features = ["system", "dlopen"] }
+smithay-client-toolkit = { version = "0.21", default-features = false, features = [
+    "xkbcommon",
+    "system",
+] }
+
 # rwh 的 Web canvas 句柄类型（WebCanvasWindowHandle）需要 wasm-bindgen-0-2
 [target.'cfg(target_family = "wasm")'.dependencies]
 raw-window-handle = { version = "0.6", features = ["wasm-bindgen-0-2"] }

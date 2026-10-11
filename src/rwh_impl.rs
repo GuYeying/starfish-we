@@ -13,8 +13,8 @@ use std::ptr::NonNull;
 
 use raw_window_handle::{
     AndroidDisplayHandle, AndroidNdkWindowHandle, DisplayHandle, HandleError, HasDisplayHandle,
-    HasWindowHandle, RawDisplayHandle, RawWindowHandle, Win32WindowHandle, WindowHandle,
-    WindowsDisplayHandle,
+    HasWindowHandle, RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle,
+    WaylandWindowHandle, Win32WindowHandle, WindowHandle, WindowsDisplayHandle,
 };
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use raw_window_handle::{WebCanvasWindowHandle, WebDisplayHandle};
@@ -37,6 +37,14 @@ impl HasWindowHandle for Window {
             SfHandle::Android { a_native_window } => {
                 let ptr = NonNull::new(a_native_window).ok_or(HandleError::Unavailable)?;
                 RawWindowHandle::AndroidNdk(AndroidNdkWindowHandle::new(ptr))
+            }
+            // Linux (Wayland): real libwayland pointers (the backend
+            // builds with the `system` wayland backend for exactly this).
+            // Linux（Wayland）：真实 libwayland 指针（后端为此特意用
+            // wayland 的 `system` 后端构建）。
+            SfHandle::Wayland { surface, .. } => {
+                let ptr = NonNull::new(surface).ok_or(HandleError::Unavailable)?;
+                RawWindowHandle::Wayland(WaylandWindowHandle::new(ptr))
             }
             // Web: the canvas element's JsValue object pointer →
             // WebCanvasWindowHandle (consumed by wgpu's WebGPU/WebGL
@@ -67,6 +75,13 @@ impl HasDisplayHandle for Window {
             // rwh 0.6 的 Windows display 句柄不携带数据。
             SfHandle::Win32 { .. } => RawDisplayHandle::Windows(WindowsDisplayHandle::new()),
             SfHandle::Android { .. } => RawDisplayHandle::Android(AndroidDisplayHandle::new()),
+            // Linux (Wayland): the display side carries the wl_display
+            // pointer.
+            // Linux（Wayland）：display 侧携带 wl_display 指针。
+            SfHandle::Wayland { display, .. } => {
+                let ptr = NonNull::new(display).ok_or(HandleError::Unavailable)?;
+                RawDisplayHandle::Wayland(WaylandDisplayHandle::new(ptr))
+            }
             // Web: an empty display handle (the canvas carries its own
             // display semantics).
             // Web：空 display 句柄（canvas 自带显示语义）
