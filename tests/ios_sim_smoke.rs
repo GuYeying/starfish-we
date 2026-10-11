@@ -43,6 +43,9 @@ mod ios {
     pub fn tick(window: &Window) -> Option<i32> {
         let frame = FRAME.get();
         FRAME.set(frame + 1);
+        if frame % 100 == 0 {
+            eprintln!("tick frame {frame} / tick 第 {frame} 帧");
+        }
 
         if frame == 0 {
             // Window sanity: nonzero size, UiKit handle.
