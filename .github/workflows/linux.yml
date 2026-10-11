@@ -46,6 +46,6 @@ jobs:
 
       - name: Web target cross-check
         # The wasm compile gate previously lived only on dev machines;
-        # host it here so it is checked on every push.
-        # wasm 编译门此前只在开发机上手动执行；挂到这里每次 push 都查。
+        # hosting it here checks it on every push.
+        # wasm 编译门此前只在开发机上手动执行；挂到这里即每次 push 都查。
         run: cargo check --target wasm32-unknown-unknown --all-features
