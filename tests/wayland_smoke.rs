@@ -38,8 +38,8 @@ fn compositor_available() -> bool {
     // Default socket: $XDG_RUNTIME_DIR/wayland-0.
     // 默认 socket：$XDG_RUNTIME_DIR/wayland-0。
     std::env::var_os("XDG_RUNTIME_DIR")
-        .map(|dir| dir.join("wayland-0"))
-        .is_some_and(|path| path.exists())
+        .map(std::path::PathBuf::from)
+        .is_some_and(|dir| dir.join("wayland-0").exists())
 }
 
 #[test]
