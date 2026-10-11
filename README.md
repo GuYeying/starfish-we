@@ -61,7 +61,7 @@ loop {
 | iOS | ✅ full-screen | ⚠️ v0: injection channel only — touch/lifecycle/keyboard pending | handles ready | v0 (CI simulator smoke ✅) |
 | Android | ✅ | ✅ incl. touch + lifecycle | ✅ handles ready | usable (emulator-verified) |
 | Web (wasm) | ✅ canvas | ✅ incl. touch + page visibility | `Window::canvas()` | usable |
-| Linux | — | — | — | planned (stub); CI floor green (compile matrix + stub-contract tests) |
+| Linux | — | — | — | planned (stub); CI floor ✅ (compile matrix + stub-contract tests) |
 
 Every push runs the macOS + iOS-simulator smoke matrix on GitHub's Mac
 runners (`.github/workflows/macos.yml`) and the Linux compile + test

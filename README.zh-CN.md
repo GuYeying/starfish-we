@@ -54,7 +54,7 @@ loop {
 | iOS | ✅ 全屏 | ⚠️ v0：仅注入通道——触摸/生命周期/键盘待接 | 句柄就绪 | v0（CI 模拟器冒烟 ✅） |
 | Android | ✅ | ✅ 含触摸+生命周期 | ✅ 句柄就绪 | 可用（模拟器验证） |
 | Web (wasm) | ✅ canvas | ✅ 含触摸+页面可见性 | `Window::canvas()` | 可用 |
-| Linux | — | — | — | 计划中（stub）；CI 下限已绿（编译矩阵 + stub 契约测试） |
+| Linux | — | — | — | 计划中（stub）；CI 下限 ✅（编译矩阵 + stub 契约测试） |
 
 每次 push 都会在 GitHub 的 Mac runner 上跑 macOS + iOS 模拟器冒烟矩阵
 （`.github/workflows/macos.yml`），以及 Linux 编译 + 测试下限
