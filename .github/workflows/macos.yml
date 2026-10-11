@@ -110,22 +110,43 @@ jobs:
       - name: Install and run smoke inside the simulator
         run: |
           xcrun simctl install booted target/ios_smoke.app
-          xcrun simctl launch booted com.starfish.iossmoke
-          # Poll the app's data container for the result file (the app
-          # self-exits after writing it).
-          # 轮询应用数据容器内的结果文件（应用写完即自行退出）。
+          # Launch detached, redirecting the app's stderr to a host file
+          # (library stage prints and Rust panics go there).
+          # 分离启动，把应用 stderr 重定向到宿主文件（库内阶段标记与
+          # Rust panic 都走 stderr）。
+          xcrun simctl launch --stderr="$PWD/sim_stderr.txt" booted com.starfish.iossmoke
+          # Poll until the result file reaches a TERMINAL state — the
+          # earliest STARTED marker appears immediately at process start,
+          # so breaking on file existence would always read STARTED.
+          # 轮询直到结果文件到达**终态**——最早的 STARTED 标记在进程
+          # 启动瞬间就写入，若见到文件即 break 则永远只读到 STARTED。
           RESULT=""
-          for i in $(seq 1 90); do
+          for i in $(seq 1 120); do
             CONTAINER=$(xcrun simctl get_app_container booted com.starfish.iossmoke data 2>/dev/null || true)
             if [ -n "$CONTAINER" ] && [ -f "$CONTAINER/tmp/result.txt" ]; then
-              RESULT="$CONTAINER/tmp/result.txt"
-              echo "=== result.txt ==="
-              cat "$RESULT"
-              break
+              CONTENT=$(cat "$CONTAINER/tmp/result.txt" 2>/dev/null || true)
+              case "$CONTENT" in
+                OK*|FAIL*|PANIC*) RESULT="$CONTENT"; break ;;
+              esac
             fi
             sleep 1
           done
-          [ -n "$RESULT" ] && grep -q "^OK" "$RESULT"
+          echo "=== result.txt (final content) ==="
+          if [ -n "$CONTAINER" ] && [ -f "$CONTAINER/tmp/result.txt" ]; then
+            cat "$CONTAINER/tmp/result.txt"
+          else
+            echo "(result file never appeared / 结果文件从未出现)"
+          fi
+          echo "=== sim_stderr.txt ==="
+          cat sim_stderr.txt 2>/dev/null || true
+          if [ -z "$RESULT" ]; then
+            echo "smoke did not reach a terminal state within 120s / 冒烟 120s 内未达终态"
+            exit 1
+          fi
+          case "$RESULT" in
+            OK*) echo "smoke passed / 冒烟通过" ;;
+            *) echo "smoke failed / 冒烟失败: $RESULT"; exit 1 ;;
+          esac
 
       - name: Upload smoke result
         if: always()
@@ -133,6 +154,6 @@ jobs:
         with:
           name: sim-out
           path: |
-            sim_out.txt
+            sim_stderr.txt
             target/smoke-result.txt
           if-no-files-found: ignore
