@@ -87,6 +87,16 @@ pub fn ios_start(tick: fn(&Window) -> Option<i32>) -> ! {
 define_class!(
     #[unsafe(super(NSObject))]
     #[thread_kind = MainThreadOnly]
+    // The runtime name must match the string handed to `UIApplicationMain`:
+    // objc2's auto-generated default (`module_path::Name` + crate version)
+    // is never findable via `NSClassFromString`, so the delegate would
+    // silently never be instantiated (the app idles with no
+    // didFinishLaunching at all).
+    // 运行时名必须与传给 `UIApplicationMain` 的字符串一致：objc2 自动
+    // 生成的默认名（`模块路径::类名` + crate 版本）经 `NSClassFromString`
+    // 永远查不到，委托会静默地不被实例化（应用空转、根本没有
+    // didFinishLaunching）。
+    #[name = "StarfishAppDelegate"]
     struct AppDelegate;
 
     unsafe impl NSObjectProtocol for AppDelegate {}
@@ -102,10 +112,14 @@ define_class!(
             _application: &UIApplication,
             _options: Option<&NSDictionary>,
         ) -> Bool {
+            eprintln!("[starfish] didFinishLaunching: creating window / 建窗中");
             match Window::new("starfish ios", (0, 0), crate::flags::WindowFlags::default()) {
                 Ok(window) => {
                     WINDOW.with_borrow_mut(|slot| *slot = Some(window));
                     install_frame_driver(self);
+                    eprintln!(
+                        "[starfish] window created + frame driver installed / 建窗完成 + 帧驱动已装"
+                    );
                     Bool::YES
                 }
                 Err(err) => {
