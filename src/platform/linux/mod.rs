@@ -60,12 +60,12 @@ use smithay_client_toolkit::{
             XdgShell,
             window::{
                 DecorationMode, Window as SctkWindow, WindowConfigure, WindowDecorations,
-                WindowHandler,
+                WindowHandler, WindowState,
             },
         },
     },
     shm::{
-        self, Shm, ShmHandler,
+        Shm, ShmHandler,
         slot::{Buffer, SlotPool},
     },
 };
@@ -279,7 +279,7 @@ impl WindowInner {
 
         // 2. Registry enumeration — the first (blocking) roundtrip.
         // 2. 注册表枚举——第一次（阻塞）往返。
-        let (globals, queue) = registry_queue_init::<WaylandState>(&conn).map_err(|err| {
+        let (globals, mut queue) = registry_queue_init::<WaylandState>(&conn).map_err(|err| {
             WindowError::OsError(
                 format!("wayland registry init failed / Wayland 注册表初始化失败: {err}").into(),
             )
@@ -438,16 +438,30 @@ impl WindowInner {
         if core.dead {
             return core.state.pending.pop_front();
         }
+        // Destructure once: MutexGuard's Deref borrows the WHOLE core, so
+        // `core.queue` + `&mut core.state` in the same expression would
+        // double-borrow. Plain field access on `&mut *core` is disjoint.
+        // 一次性解构：MutexGuard 的 Deref 借用的是**整个** core，同一
+        // 表达式里 `core.queue` 配 `&mut core.state` 会双重借用；对
+        // `&mut *core` 直接字段访问才是互不相交的。
+        let WaylandCore {
+            conn,
+            queue,
+            state,
+            dead,
+            ..
+        } = &mut *core;
 
         // 1) Flush outbound requests; errors resurface in read/dispatch
         //    below (a full socket buffer is transient, not fatal).
         // 1) 冲刷出站请求；错误会在下方 read/dispatch 复现（socket 缓冲满
         //    属暂时性，非致命）。
-        let _ = core.queue.flush();
+        let _ = conn.flush();
+        let _ = queue.flush();
         // 2) Dispatch already-buffered events.
         // 2) 派发已缓冲事件。
-        if core.queue.dispatch_pending(&mut core.state).is_err() {
-            return core.die();
+        if queue.dispatch_pending(state).is_err() {
+            return mark_dead(state, dead);
         }
         // 3) Try to read more from the socket — an Err here is fatal (a
         //    WouldBlock-style idle read is handled inside wayland-client
@@ -456,21 +470,21 @@ impl WindowInner {
         // 3) 尝试从 socket 再读——此处 Err 即致命（WouldBlock 类的空闲
         //    读在 wayland-client 内部已被消化为 Ok(0)）；`None` 表示已有
         //    事件缓冲（第 2 步已派发）。
-        let read = core.queue.prepare_read().map(|guard| guard.read());
+        let read = queue.prepare_read().map(|guard| guard.read());
         if matches!(read, Some(Err(_))) {
-            return core.die();
+            return mark_dead(state, dead);
         }
         // 4) Dispatch what step 3 read.
         // 4) 派发第 3 步读到的事件。
-        if read.is_some() && core.queue.dispatch_pending(&mut core.state).is_err() {
-            return core.die();
+        if read.is_some() && queue.dispatch_pending(state).is_err() {
+            return mark_dead(state, dead);
         }
         // 5) Client-side key-repeat synthesis.
         // 5) 客户端按键重复合成。
-        synthesize_repeat(&mut core.state);
+        synthesize_repeat(state);
         // 6) One event out.
         // 6) 取走一条事件。
-        core.state.pending.pop_front()
+        state.pending.pop_front()
     }
 
     pub(crate) fn size(&self) -> (u32, u32) {
@@ -566,7 +580,7 @@ impl WindowInner {
     }
 
     pub(crate) fn is_borderless(&self) -> bool {
-        self.lock_core().borderless
+        self.lock_core().state.borderless
     }
 
     pub(crate) fn set_mouse_grabbed(&self, _grabbed: bool) {
@@ -688,20 +702,18 @@ impl WindowInner {
     }
 }
 
-impl WaylandCore {
-    /// Converts a fatal connection error into exactly one
-    /// `CloseRequested`, then hands the caller whatever is queued.
-    /// 把致命连接错误转化为恰好一条 `CloseRequested`，随后交还队列中
-    /// 已有的事件。
-    fn die(&mut self) -> Option<Event> {
-        if !self.dead {
-            self.dead = true;
-            self.state.repeat = None;
-            self.state.pending.clear();
-            self.state.pending.push_back(Event::CloseRequested);
-        }
-        self.state.pending.pop_front()
+/// Converts a fatal connection error into exactly one `CloseRequested`,
+/// then hands the caller whatever is queued.
+/// 把致命连接错误转化为恰好一条 `CloseRequested`，随后交还队列中已有
+/// 的事件。
+fn mark_dead(state: &mut WaylandState, dead: &mut bool) -> Option<Event> {
+    if !*dead {
+        *dead = true;
+        state.repeat = None;
+        state.pending.clear();
+        state.pending.push_back(Event::CloseRequested);
     }
+    state.pending.pop_front()
 }
 
 /// Pushes `KeyDown{repeat:true}` + `TextInput` for every due repeat tick
@@ -855,8 +867,8 @@ impl WindowHandler for WaylandState {
         if let Some(h) = configure.new_size.1 {
             self.logical_h = h.get();
         }
-        self.fullscreen = configure.state.is_fullscreen();
-        self.maximized = configure.state.is_maximized();
+        self.fullscreen = configure.state.contains(WindowState::FULLSCREEN);
+        self.maximized = configure.state.contains(WindowState::MAXIMIZED);
         self.borderless = configure.decoration_mode == DecorationMode::Client;
 
         self.draw_fill();
