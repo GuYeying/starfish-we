@@ -62,6 +62,7 @@ mod ios {
     pub fn tick(window: &Window) -> Option<i32> {
         let frame = FRAME.get();
         FRAME.set(frame + 1);
+        eprintln!("[smoke] tick frame {frame} / tick 第 {frame} 帧");
 
         if frame == 0 {
             // Marker: the app reached the tick (distinguishes "crashed
@@ -80,6 +81,7 @@ mod ios {
             // Window sanity: nonzero size, UiKit handle.
             // 窗口健全性：非零尺寸 + UiKit 句柄。
             let (w, h) = window.size();
+            eprintln!("[smoke] frame 0 size {w}x{h} / 窗口尺寸 {w}x{h}");
             if w == 0 || h == 0 {
                 write_result(false, "window size is zero / 窗口尺寸为零");
                 std::process::exit(1);
