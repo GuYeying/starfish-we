@@ -1029,7 +1029,7 @@ impl SeatHandler for WaylandState {
                 let cursor_surface = self.compositor.create_surface(qh);
                 self.themed_pointer = self
                     .seat_state
-                    .get_pointer_with_theme::<()>(
+                    .get_pointer_with_theme::<WaylandState, ()>(
                         qh,
                         &seat,
                         self.shm.wl_shm(),
