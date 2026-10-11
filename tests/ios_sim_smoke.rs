@@ -16,6 +16,12 @@
 //! (packaged as a minimal .app bundle).
 //! CI 通过 `xcrun simctl spawn` 在已启动的 iPhone 模拟器内运行
 //! （打包为最小 .app bundle）。
+//!
+//! Note: no CGEvent usage here — event injection APIs are macOS-only and
+//! would fail dyld at load. The deterministic injection goes through the
+//! backend buffer (`ios_inject_test_event`).
+//! 注意：此处不用 CGEvent——事件注入 API 为 macOS 专属，引用会导致
+//! dyld 加载失败。确定性注入走后端缓冲（`ios_inject_test_event`）。
 
 #[cfg(target_os = "ios")]
 mod ios {
@@ -56,7 +62,6 @@ mod ios {
                 7,
                 "sim-inject".to_string(),
             )));
-            return None;
         }
 
         while let Some(event) = window.poll_event() {
