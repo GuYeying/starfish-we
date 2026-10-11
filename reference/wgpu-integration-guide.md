@@ -433,8 +433,8 @@ Per-platform surface sources:
   advisory under tiling compositors.
 - **Verification**: CI runs `wayland_smoke` under headless Weston
   (connect → configure → shm commit → event drain → single-window guard
-  → drop/recreate); interactive input (typing / wheel / close) is
-  verified manually on a real Wayland session.
+  → drop/recreate); interactive input (typing / wheel / close) was
+  verified on a real Wayland session (VMware Ubuntu VM, 2026-10-11).
 
 ---
 
@@ -498,7 +498,7 @@ after the platform's own readiness signal.
 | iOS | ~60% (v0: window + frame driver + injection channel; missing: real touch, lifecycle, keyboard/TextInput, real-device verification) | CI simulator smoke ✅ (injected-event roundtrip); real device pending |
 | Android | ~90% (missing: GameActivity, gesture nav, soft-input control API, saveInstanceState) | emulator-tested (4 rapid relaunch cycles, 0 panics); real device pending |
 | Web | ~85% (missing: IME, rwh Web registry, wheel preventDefault) | event layer manually verified ✅; the wgpu-WebGPU path not yet exercised |
-| Linux | ~85% (Wayland-only; missing: touch, pointer constraints/relative, fractional scaling, IME preedit, xdg-activation) | CI headless-Weston smoke ✅ (configure/commit roundtrip + single-window guard); interactive input pending real-device verification |
+| Linux | ~85% (Wayland-only; missing: touch, pointer constraints/relative, fractional scaling, IME preedit, xdg-activation) | real Wayland session verified ✅ (interactive input / close / CSD decorations end-to-end, 2026-10-11 VMware Ubuntu) + CI headless-Weston smoke ✅ |
 
 Version facts: raw-window-handle **0.6** (`#[non_exhaustive]`; use the
 `new()` constructors; `WindowsDisplayHandle` / `AndroidDisplayHandle` are

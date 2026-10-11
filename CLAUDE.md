@@ -57,7 +57,7 @@ Mutex 仅为保住 `Window: Sync`），**平台模块零感知**；载荷 `Any+S
 
 windows / linux(ubuntu) / macos / ios / android / web(wasm)。
 
-当前状态：**Windows / macOS / iOS(模拟器) / Linux(Wayland) 后端已实现且冒烟通过**（Windows 本地真实建窗；macOS+iOS 由 `.github/workflows/macos.yml` 双 job、Linux 由 `.github/workflows/linux.yml`（含 headless Weston 真实冒烟）自动验证）；Android / Web 已实现（打包手动测试）。公共 API：`Window` / `Event` / `KeyCode` / `Modifiers` / `MouseButton` / `WindowError` / `RawWindowHandle`。各平台在 `src/platform/<os>/` 平行实现同一套 `WindowInner` 接口，经 `platform::imp` 做 cfg 分发；单窗口由 `Window::new` 内的 `AtomicBool` 占位保证。
+当前状态：**Windows / macOS / iOS(模拟器) / Linux(Wayland) 后端已实现且验证通过**（Windows 本地真实建窗；macOS+iOS 由 `.github/workflows/macos.yml` 双 job、Linux 由 `.github/workflows/linux.yml`（含 headless Weston 真实冒烟）自动验证；Linux 另经真机 Wayland 会话验收——交互输入/关闭/CSD 装饰全链路，2026-10-11）；Android / Web 已实现（打包手动测试）。公共 API：`Window` / `Event` / `KeyCode` / `Modifiers` / `MouseButton` / `WindowError` / `RawWindowHandle`。各平台在 `src/platform/<os>/` 平行实现同一套 `WindowInner` 接口，经 `platform::imp` 做 cfg 分发；单窗口由 `Window::new` 内的 `AtomicBool` 占位保证。
 
 Windows 后端分层（值得沿用到其他后端）：`platform/windows/mod.rs` 只管建窗、`PeekMessageW` 泵、状态挂载（`GWLP_USERDATA`）与系统默认兜底；消息→`Event` 的翻译全部在 `platform/windows/translate.rs`（仅 `event` feature 编译，返回 `Option<LRESULT>`，`None` 回落系统默认）。因此 `--no-default-features --features window`（仅建窗）同样成立。
 

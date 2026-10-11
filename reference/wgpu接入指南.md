@@ -365,8 +365,8 @@ create_surface → configure → 取帧 → 重配置再取帧，全程零 unsaf
   以 Adwaita 标题栏/关闭按钮/拖拽/边缘缩放兜底，KWin 的 Server 装饰则让位）；position/opacity/always-on-top/鼠标抓取/相对
   鼠标/隐藏光标 = no-op（各自协议属后续项）；`set_size` 平铺合成器下仅咨询性。
 - **验证**：CI 在 headless Weston 下跑 `wayland_smoke`（连接→configure→shm
-  提交→事件排空→单窗口守卫→drop 重建）；交互输入（打字/滚轮/关闭）在真机
-  Wayland 会话手动验收。
+  提交→事件排空→单窗口守卫→drop 重建）；交互输入（打字/滚轮/关闭）已
+  在真机 Wayland 会话（VMware Ubuntu VM）验收通过（2026-10-11）。
 
 ---
 
@@ -421,7 +421,7 @@ create_surface → configure → 取帧 → 重配置再取帧，全程零 unsaf
 | iOS | ~60%（v0：建窗+帧驱动+注入通道；缺：真实触摸、生命周期、键盘/TextInput、真机验证） | CI 模拟器冒烟 ✅（注入事件往返）；真机待验 |
 | Android | ~90%（缺：GameActivity、手势导航、软键盘控制 API、saveInstanceState） | 模拟器实测（四轮快打 0 panic）；真机待复测 |
 | Web | ~85%（缺：IME、rwh Web 注册表、wheel preventDefault） | 事件层已经人肉点验 ✅；wgpu-WebGPU 链路未跑通 |
-| Linux | ~85%（Wayland-only；缺：触摸、指针约束/相对鼠标、分数缩放、IME preedit、xdg-activation） | CI headless Weston 冒烟 ✅（configure/提交回路 + 单窗口守卫）；交互输入真机待验 |
+| Linux | ~85%（Wayland-only；缺：触摸、指针约束/相对鼠标、分数缩放、IME preedit、xdg-activation） | 真机 Wayland 会话实测 ✅（交互输入/关闭/CSD 装饰全链路，2026-10-11 VMware Ubuntu）+ CI headless Weston 冒烟 ✅ |
 
 版本事实：raw-window-handle **0.6**（`#[non_exhaustive]`，用 `new()` 构造器；
 `WindowsDisplayHandle`/`AndroidDisplayHandle` 是空结构；Android 变体名是

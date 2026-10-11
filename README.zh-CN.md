@@ -51,7 +51,7 @@ loop {
 |---|---|---|---|---|
 | Windows | ✅ | ✅ 键鼠/滚轮/焦点 | ✅ wgpu 真机验证 | 可用 |
 | macOS | ✅ | ✅ 键鼠/滚轮/焦点 + 最小化→Suspended/Resumed | 句柄就绪（wgpu 链路未实测） | 可用（CI 冒烟验证） |
-| Linux (Wayland) | ✅ | ✅ 键鼠/滚轮/焦点（已弃 X11） | 句柄就绪（wgpu 链路未实测） | 可用（CI headless-Weston 冒烟 ✅） |
+| Linux (Wayland) | ✅ | ✅ 键鼠/滚轮/焦点 + CSD 标题栏（已弃 X11） | 句柄就绪（wgpu 链路未实测） | 可用（真机 Wayland + CI 双验证 ✅） |
 | iOS | ✅ 全屏 | ⚠️ v0：仅注入通道——触摸/生命周期/键盘待接 | 句柄就绪 | v0（CI 模拟器冒烟 ✅） |
 | Android | ✅ | ✅ 含触摸+生命周期 | ✅ 句柄就绪 | 可用（模拟器验证） |
 | Web (wasm) | ✅ canvas | ✅ 含触摸+页面可见性 | `Window::canvas()` | 可用 |

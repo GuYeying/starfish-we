@@ -58,7 +58,7 @@ loop {
 |---|---|---|---|---|
 | Windows | ✅ | ✅ keys/mouse/wheel/focus | ✅ wgpu verified on real hardware | usable |
 | macOS | ✅ | ✅ keys/mouse/wheel/focus + miniaturize→Suspended/Resumed | handles ready (wgpu path untested) | usable (CI smoke-verified) |
-| Linux (Wayland) | ✅ | ✅ keys/mouse/wheel/focus (X11 dropped) | handles ready (wgpu path untested) | usable (CI headless-Weston smoke ✅) |
+| Linux (Wayland) | ✅ | ✅ keys/mouse/wheel/focus + CSD titlebar (X11 dropped) | handles ready (wgpu path untested) | usable (real-Wayland + CI verified ✅) |
 | iOS | ✅ full-screen | ⚠️ v0: injection channel only — touch/lifecycle/keyboard pending | handles ready | v0 (CI simulator smoke ✅) |
 | Android | ✅ | ✅ incl. touch + lifecycle | ✅ handles ready | usable (emulator-verified) |
 | Web (wasm) | ✅ canvas | ✅ incl. touch + page visibility | `Window::canvas()` | usable |
