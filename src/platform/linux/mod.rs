@@ -1160,7 +1160,7 @@ smithay_client_toolkit::delegate_dispatch2!(WaylandState);
 
 impl Drop for WindowInner {
     fn drop(&mut self) {
-        let Ok(mut core) = self.core.lock() else {
+        let Ok(core) = self.core.lock() else {
             return;
         };
         if core.dead {

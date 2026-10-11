@@ -112,17 +112,17 @@ travels through `TextInput`. `Modifiers { shift, ctrl, alt, meta }`
 **Platform production matrix** (variants a platform never produces simply
 never appear on it):
 
-| Event | Windows | macOS | iOS | Android | Web |
-|---|---|---|---|---|---|
-| CloseRequested | ✅ WM_CLOSE / Alt+F4 | ✅ close button | ❌ (v0: no close concept) | ✅ Destroy / back key | ❌ (closing the page ends it) |
-| Resized | ✅ | ✅ | ✅ (initial only; inherently full-screen) | ✅ | ✅ |
-| Focus | ✅ | ✅ | ❌ (v0: not wired) | ✅ | ✅ |
-| Keyboard / TextInput | ✅ | ✅ (NSEvent characters) | ❌ (v0: not wired) | ✅ (IME committed text) | ✅ (no IME composition) |
-| Mouse | ✅ | ✅ | ❌ (v0: touch delivery not wired) | synthesized from primary finger | ✅ |
-| Touch | ❌ | ❌ | ❌ (v0: delivery not wired) | ✅ | ✅ |
-| RedrawRequested | ✅ WM_PAINT | ❌ (frame cadence = host tick) | ❌ (CADisplayLink drives the tick itself) | ✅ RedrawNeeded/InitWindow | ✅ rAF, coalesced per frame |
-| Suspended / Resumed | ❌ | ✅ miniaturize / deminiaturize | ❌ (v0: lifecycle not wired) | ✅ Pause·Stop·TerminateWindow / Resume·InitWindow | ✅ page hidden/visible |
-| User (custom) | ✅ host-injected | ✅ host-injected | ✅ host-injected (deterministic test channel) | ✅ host-injected | ✅ host-injected |
+| Event | Windows | macOS | Linux (Wayland) | iOS | Android | Web |
+|---|---|---|---|---|---|---|
+| CloseRequested | ✅ WM_CLOSE / Alt+F4 | ✅ close button | ✅ toplevel close_request / lost connection | ❌ (v0: no close concept) | ✅ Destroy / back key | ❌ (closing the page ends it) |
+| Resized | ✅ | ✅ | ✅ configure / scale change | ✅ (initial only; inherently full-screen) | ✅ | ✅ |
+| Focus | ✅ | ✅ | ✅ wl_keyboard enter/leave | ❌ (v0: not wired) | ✅ | ✅ |
+| Keyboard / TextInput | ✅ | ✅ (NSEvent characters) | ✅ (evdev→KeyCode; xkb text; client-side repeat) | ❌ (v0: not wired) | ✅ (IME committed text) | ✅ (no IME composition) |
+| Mouse | ✅ | ✅ | ✅ (logical × scale = physical) | ❌ (v0: touch delivery not wired) | synthesized from primary finger | ✅ |
+| Touch | ❌ | ❌ | ❌ (touch protocols not wired) | ❌ (v0: delivery not wired) | ✅ | ✅ |
+| RedrawRequested | ✅ WM_PAINT | ❌ (frame cadence = host tick) | ✅ one on the initial configure | ❌ (CADisplayLink drives the tick itself) | ✅ RedrawNeeded/InitWindow | ✅ rAF, coalesced per frame |
+| Suspended / Resumed | ❌ | ✅ miniaturize / deminiaturize | ❌ | ❌ (v0: lifecycle not wired) | ✅ Pause·Stop·TerminateWindow / Resume·InitWindow | ✅ page hidden/visible |
+| User (custom) | ✅ host-injected | ✅ host-injected | ✅ host-injected | ✅ host-injected (deterministic test channel) | ✅ host-injected | ✅ host-injected |
 
 ---
 
@@ -225,7 +225,7 @@ Per-platform surface sources:
 | iOS | same (UIView + layer handles) | traits implemented, untested |
 | Android | same (ANativeWindow; valid only while `Resumed`) | traits implemented, device-side untested |
 | Web | `window.canvas()` → wgpu's Web backend (needs a WebGPU-capable browser) | accessor ready, path not yet exercised |
-| Linux | backend not implemented (stub returns `UnsupportedPlatform`) | see section 8 |
+| Linux | same (`wl_display` + `wl_surface` raw pointers; requires the wayland `system` backend) | traits implemented, wgpu path untested |
 
 ---
 
@@ -388,13 +388,51 @@ Per-platform surface sources:
   `--stderr=`) — the injected-event roundtrip passes; real device
   pending.
 
-### 5.6 Linux (not implemented)
+### 5.6 Linux (**Wayland-only**, `smithay-client-toolkit` 0.21 + `wayland-client` 0.31)
 
-Stub behavior: `Window::new` returns
-`WindowError::UnsupportedPlatform`; the six-target compile matrix is
-green (the event/type layer is fully usable). Plan: X11 first
-(`x11rb`, testable under WSLg), Wayland later as a horizontal split.
-**Do not promise shipments until it lands.**
+- **X11 is dropped by design decision**: X11 sessions are not supported
+  (under XWayland this is still a native Wayland client). Deps use the
+  `system`+`dlopen` backends: real `wl_display*`/`wl_surface*` pointers
+  for wgpu (the pure-Rust backend has no display pointer), libwayland
+  loaded at runtime with no link-time dependency. Building needs
+  `pkg-config` + `libxkbcommon-dev` (xkbcommon is a C link dep — the
+  Linux target therefore can no longer be cross-checked from a Windows
+  host; Linux compile verification lives in `linux.yml`).
+- **sctk 0.21 wiring**: 0.21 merged all per-module `delegate_*!` macros
+  into a single `delegate_dispatch2!` — the wiring is `delegate_registry!`
+  + `impl ProvidesRegistryState` (`registry_handlers![OutputState,
+  SeatState]`) + `delegate_dispatch2!`.
+- **A window maps via an initial EMPTY commit**: the xdg toplevel commits
+  with no buffer, the compositor replies with the first configure, then
+  the shm backdrop is drawn (SlotPool, double-buffered) and presented —
+  from then on the window is visible and `size()` is known. The init
+  `roundtrip` is the library's only blocking point (same tier as Windows
+  pumping messages in `new`).
+- **Non-blocking six-step pump**: `flush` → `dispatch_pending` →
+  `prepare_read`+`read` (WouldBlock = idle, digested to Ok(0) inside
+  wayland-client) → `dispatch_pending` → client-side key-repeat synthesis
+  → pop. **A lost connection / protocol error = exactly one
+  `CloseRequested`** (hosts exit cleanly; same philosophy as the Android
+  exit contract).
+- **Keyboard**: sctk hands over RAW evdev codes (`translate.rs` maps them
+  to W3C `KeyCode`; the +8 xkb offset is internal to sctk) and
+  xkb-composed UTF-8 (compose included); compositors don't repeat keys —
+  repeats are synthesized client-side from `RepeatInfo` (modifiers don't
+  repeat).
+- **Coordinates**: configure sizes are logical; physical = logical ×
+  integer scale (fractional scaling ignored in v1); wheel uses value120
+  first, discrete as fallback, vertical negated (wl positive = down, our
+  convention positive = up).
+- **Capability approximations** (documented): title / fullscreen /
+  maximize / minimize real; resizable = the min=max-size idiom (xdg has
+  no resizable request); borderless = xdg-decoration best-effort;
+  position / opacity / always-on-top / mouse grab / relative mouse /
+  cursor hide = no-op (their protocols are follow-ups); `set_size` is
+  advisory under tiling compositors.
+- **Verification**: CI runs `wayland_smoke` under headless Weston
+  (connect → configure → shm commit → event drain → single-window guard
+  → drop/recreate); interactive input (typing / wheel / close) is
+  verified manually on a real Wayland session.
 
 ---
 
@@ -416,6 +454,10 @@ green (the event/type layer is fully usable). Plan: X11 first
 6. Never pump the platform message loop yourself.
 7. The event enum is `#[non_exhaustive]`: always leave a `_` arm in your
    matches.
+8. Linux: all methods on the creating thread; a lost compositor
+   connection / protocol error surfaces as **exactly one
+   `CloseRequested`** — exit your loop on it and don't rely on further
+   events.
 
 ---
 
@@ -428,11 +470,12 @@ green (the event/type layer is fully usable). Plan: X11 first
 | Windows | full smoke suite | `cargo test` |
 | macOS | CI smoke (real Mac runner: probe + full suite) | after push, `gh run watch` (the `macos` job of `.github/workflows/macos.yml`) |
 | iOS | CI simulator smoke (window + injected roundtrip) | the `ios-sim` job of the same workflow; on failure read the result.txt terminal state + the `sim_stderr.txt` artifact |
-| Linux | CI compile matrix + stub-contract tests | after push, `gh run watch` (the `linux` job of `.github/workflows/linux.yml`) |
+| Linux | CI compile matrix + a real Wayland smoke under headless Weston | after push, `gh run watch` (the `linux` job of `.github/workflows/linux.yml`) |
+| Linux | manual acceptance on a Wayland session | `cargo run --example basic`; if it stalls, `WAYLAND_DEBUG=1` traces the whole wire protocol |
 | Android | event / lifecycle logs | `adb logcat -s starfish`; panics additionally under `RustStdoutStderr` |
 | Android | build + install | `export ANDROID_NDK_ROOT=<ndk> && cargo apk build --features android-demo && adb install -r target/debug/apk/starfish-demo.apk` |
 | Web | page overlay + console | `python -m http.server 8000 -d testweb` → http://localhost:8000 (`scripts/build_web.sh` repackages) |
-| All platforms | compile matrix | `cargo check --target <t> --features wgpu` (six targets should all be green) |
+| All platforms | compile matrix | `cargo check --target <t> --features wgpu`; **exception**: the Linux target cannot be cross-checked from a Windows host (xkbcommon is a C link dep) — its compile verification lives in linux.yml |
 
 Incident methodology (from "android绑定运行问题与解决方案.md",
 universally applicable): reproduce first and harvest the crash output
@@ -453,7 +496,7 @@ after the platform's own readiness signal.
 | iOS | ~60% (v0: window + frame driver + injection channel; missing: real touch, lifecycle, keyboard/TextInput, real-device verification) | CI simulator smoke ✅ (injected-event roundtrip); real device pending |
 | Android | ~90% (missing: GameActivity, gesture nav, soft-input control API, saveInstanceState) | emulator-tested (4 rapid relaunch cycles, 0 panics); real device pending |
 | Web | ~85% (missing: IME, rwh Web registry, wheel preventDefault) | event layer manually verified ✅; the wgpu-WebGPU path not yet exercised |
-| Linux | 0% (stub) | CI compile matrix + unit tests (stub contract) ✅ |
+| Linux | ~85% (Wayland-only; missing: touch, pointer constraints/relative, fractional scaling, IME preedit, xdg-activation) | CI headless-Weston smoke ✅ (configure/commit roundtrip + single-window guard); interactive input pending real-device verification |
 
 Version facts: raw-window-handle **0.6** (`#[non_exhaustive]`; use the
 `new()` constructors; `WindowsDisplayHandle` / `AndroidDisplayHandle` are
@@ -461,4 +504,8 @@ empty structs; the Android variant is named `AndroidNdk`); compatible
 wgpu version **30** (`get_current_texture` returns the enum
 `CurrentSurfaceTexture`, not a Result; `SurfaceConfiguration` gained the
 required `color_space` field); wasm-bindgen pinned at **0.2.127** (must
-match wasm-bindgen-cli exactly).
+match wasm-bindgen-cli exactly); Linux = sctk **0.21.1** (single-macro
+`delegate_dispatch2!` wiring) + wayland-client **0.31** (`system`+`dlopen`,
+required for wgpu interop) + xkbcommon **0.8** (C link dep: pkg-config
+probes it at build time, so the Linux target can't be cross-checked from
+a Windows host).

@@ -58,14 +58,15 @@ loop {
 |---|---|---|---|---|
 | Windows | ✅ | ✅ keys/mouse/wheel/focus | ✅ wgpu verified on real hardware | usable |
 | macOS | ✅ | ✅ keys/mouse/wheel/focus + miniaturize→Suspended/Resumed | handles ready (wgpu path untested) | usable (CI smoke-verified) |
+| Linux (Wayland) | ✅ | ✅ keys/mouse/wheel/focus (X11 dropped) | handles ready (wgpu path untested) | usable (CI headless-Weston smoke ✅) |
 | iOS | ✅ full-screen | ⚠️ v0: injection channel only — touch/lifecycle/keyboard pending | handles ready | v0 (CI simulator smoke ✅) |
 | Android | ✅ | ✅ incl. touch + lifecycle | ✅ handles ready | usable (emulator-verified) |
 | Web (wasm) | ✅ canvas | ✅ incl. touch + page visibility | `Window::canvas()` | usable |
-| Linux | — | — | — | planned (stub); CI floor ✅ (compile matrix + stub-contract tests) |
 
 Every push runs the macOS + iOS-simulator smoke matrix on GitHub's Mac
-runners (`.github/workflows/macos.yml`) and the Linux compile + test
-floor (`.github/workflows/linux.yml`, backend still a stub).
+runners (`.github/workflows/macos.yml`) and the Linux matrix plus a real
+Wayland smoke under a headless Weston compositor
+(`.github/workflows/linux.yml`).
 
 Platform driving principles, the event semantics matrix, caveats and
 diagnostics live in the

@@ -25,7 +25,7 @@ starfish-we 是一个跨平台的**单窗口 + 事件** crate，用于替换 win
 
 分层解耦，底层零依赖：
 
-- **基础层（默认）**：`Window` 暴露裸平台句柄（自有 `RawWindowHandle` 枚举：HWND / NSWindow / UIView / X11 Display+Window / ANativeWindow / canvas），纯指针、零依赖。用户可用 unsafe 自行桥接任何渲染后端。
+- **基础层（默认）**：`Window` 暴露裸平台句柄（自有 `RawWindowHandle` 枚举：HWND / NSWindow / UIView / Wayland display+surface / ANativeWindow / canvas），纯指针、零依赖。用户可用 unsafe 自行桥接任何渲染后端。
 - **`wgpu` feature（可选）**：依赖 `raw-window-handle`（极小、无传递依赖），为 `Window` 实现 `HasWindowHandle` + `HasDisplayHandle`，使 `instance.create_surface(&window)` 零 unsafe 直通。**不直接依赖 wgpu 本体**（避免版本钉死与编译膨胀）。
 - 渲染循环分工：本 crate 只管窗口+事件（`Resized` / `RedrawRequested`），用户拿到 surface 自行 `configure`。
 
@@ -57,7 +57,7 @@ Mutex 仅为保住 `Window: Sync`），**平台模块零感知**；载荷 `Any+S
 
 windows / linux(ubuntu) / macos / ios / android / web(wasm)。
 
-当前状态：**Windows / macOS / iOS(模拟器) 后端已实现且冒烟通过**（Windows 本地真实建窗；macOS+iOS 由 `.github/workflows/macos.yml` 双 job 自动验证）；Android / Web 已实现（打包手动测试）；Linux 仍为 stub（返回 `UnsupportedPlatform`）。公共 API：`Window` / `Event` / `KeyCode` / `Modifiers` / `MouseButton` / `WindowError` / `RawWindowHandle`。各平台在 `src/platform/<os>/` 平行实现同一套 `WindowInner` 接口，经 `platform::imp` 做 cfg 分发；单窗口由 `Window::new` 内的 `AtomicBool` 占位保证。
+当前状态：**Windows / macOS / iOS(模拟器) / Linux(Wayland) 后端已实现且冒烟通过**（Windows 本地真实建窗；macOS+iOS 由 `.github/workflows/macos.yml` 双 job、Linux 由 `.github/workflows/linux.yml`（含 headless Weston 真实冒烟）自动验证）；Android / Web 已实现（打包手动测试）。公共 API：`Window` / `Event` / `KeyCode` / `Modifiers` / `MouseButton` / `WindowError` / `RawWindowHandle`。各平台在 `src/platform/<os>/` 平行实现同一套 `WindowInner` 接口，经 `platform::imp` 做 cfg 分发；单窗口由 `Window::new` 内的 `AtomicBool` 占位保证。
 
 Windows 后端分层（值得沿用到其他后端）：`platform/windows/mod.rs` 只管建窗、`PeekMessageW` 泵、状态挂载（`GWLP_USERDATA`）与系统默认兜底；消息→`Event` 的翻译全部在 `platform/windows/translate.rs`（仅 `event` feature 编译，返回 `Option<LRESULT>`，`None` 回落系统默认）。因此 `--no-default-features --features window`（仅建窗）同样成立。
 
@@ -85,7 +85,49 @@ CI：`.github/workflows/macos.yml`（macos-14 runner，双 job）——`macos`�
 - **iOS 宿主入口 `ios_main!` 是语句式**：在 `fn main` 体内调用 `starfish_we::ios_main!(tick);`，展开为 `ios_start(tick)`（永不返回）。与 `android_main!` 的差异是刻意的：Android glue 的 ABI 要求顶层定义 `android_main` 函数，iOS 无此约定。**教训：宏若展开成 `fn main` 定义，被放进函数体时会静默变成永不执行的嵌套函数——类型检查全绿、运行时零声响**（iOS 冒烟因此哑火过一整轮）。
 - **objc2 两个 UIKit 装配坑**：① `define_class!` 的类**惰性注册**（首次 `ClassType::class()` 才进 ObjC 运行时），而 `UIApplicationMain` 按**名字**查委托类——必须先 `<AppDelegate as ClassType>::class()` 强制注册；且 objc2 默认类名是 `模块路径::类名+版本`，经名字查找必须 `#[name = "..."]` 固定。② 启动结束时 key window 必须有 `rootViewController`，否则 `NSInternalInconsistencyException`（裸 UIWindow 不够，已挂空控制器）。
 - **iOS 冒烟诊断协议**（`tests/ios_sim_smoke.rs`）：分阶段写数据容器 `tmp/result.txt`——`STARTED`（进程起）→ `FRAME0`（tick 到）→ 终态 `OK`/`FAIL`/`PANIC`（panic 钩子装在 main 最早处，覆盖 UIApplicationMain 引导期）；CI 轮询**终态**（不能见文件即读——最早的 STARTED 瞬间就写入），stderr 经 `simctl launch --stderr=` 抓到宿主文件。**教训：判定步曾用 `grep || true` 掩盖 smoke 从未运行，产出假绿**；stderr/结果文件双通道 + 终态轮询后，NSException 类崩溃（Rust panic 钩子抓不到 ObjC 异常）靠 stderr 回溯定位。
-- **CI 布局与工作流 YAML 陷阱**：`macos.yml`（`macos`+`ios-sim` 双 job）+ `linux.yml`（`linux` job：编译矩阵 + 无后端测试下限（`tests/stub_platform.rs` 断言 stub 平台 `new()` 返回 `UnsupportedPlatform` 且不泄漏单窗口占位）+ wasm 交叉检查）。**工作流 YAML：步骤名含裸 `: `（冒号+空格）即解析错误**——症状是 run 零 job、0 秒失败、run 名退化成文件路径；给名字加引号即可（踩过，二分定位）。
+- **CI 布局与工作流 YAML 陷阱**：`macos.yml`（`macos`+`ios-sim` 双 job）+ `linux.yml`（`linux` job：编译矩阵 + 测试套件（缺平台自动跳过）+ headless Weston 下真实 `wayland_smoke` + wasm 交叉检查；`apt` 需 `libxkbcommon-dev pkg-config weston`）。**工作流 YAML：步骤名含裸 `: `（冒号+空格）即解析错误**——症状是 run 零 job、0 秒失败、run 名退化成文件路径；给名字加引号即可（踩过，二分定位）。
+
+## Linux / Wayland 后端（已实现，Wayland-only）
+
+设计决策：**放弃 X11，仅支持 Wayland**（`RawWindowHandle` 的 `Xlib` 变体已删，
+换成 `Wayland { display, surface }`；rwh 侧对应 `WaylandDisplayHandle`/`WaylandWindowHandle`，
+wgpu 互操作要求 wayland-client 开 `system` 后端——纯 Rust 后端没有 display 指针；
+`dlopen` 免链接期 libwayland）。
+
+- **依赖与构建**：`smithay-client-toolkit 0.21` + `wayland-client 0.31`（仅 Linux
+  target 门控）。**xkbcommon 是 C 链接依赖，pkg-config 在构建期探测——Windows 主机
+  交叉检查 Linux target 从此失效**，Linux 编译验证全部由 linux.yml 承担（runner 需
+  `apt install libxkbcommon-dev pkg-config`）。
+- **sctk 0.21 破坏性变更**：所有 `delegate_xdg_shell!` 类宏被单一
+  `delegate_dispatch2!` 取代——装配三件套 = `delegate_registry!` +
+  `impl ProvidesRegistryState`（`registry_handlers![OutputState, SeatState]`）+
+  `delegate_dispatch2!`。trait 方法签名里 `QueueHandle` 必须带泛型
+  （`&QueueHandle<WaylandState>`）；`WindowState` 的公开路径是
+  `sctk::reexports::csd_frame::WindowState`（flagset，用
+  `.contains(WindowState::FULLSCREEN)`）。
+- **建窗 = 空 commit 映射**：xdg toplevel 先做一次不带缓冲的 commit，合成器回
+  首个 configure 后才画 shm 底色（SlotPool，双缓冲兜底）并提交；`new()` 里的
+  有界 `roundtrip`（≤3 次）是全库唯一阻塞点。`WAYLAND_DISPLAY` 未设 →
+  `OsError`（信息含提示）。
+- **非阻塞六步泵**：`flush` → `dispatch_pending` → `prepare_read`+`read` →
+  `dispatch_pending` → 客户端重复合成 → pop。**MutexGuard 的 Deref 借用整个
+  core**——同表达式混用 `core.queue` 与 `&mut core.state` 会 E0499，必须先
+  `let WaylandCore { queue, state, .. } = &mut *core;` 解构。`WaylandError`
+  不公开可命名——flush 错误忽略（会在 read/dispatch 复现），read 错误一律视为
+  致命。**连接丢失 = 恰好一条 `CloseRequested`**（Android 退出契约同哲学）。
+- **键盘**：sctk 给裸 evdev 码（+8 偏移只在它内部查 keysym 用），
+  `linux/translate.rs` 全表映射 W3C `KeyCode`；TextInput = xkb 合成 UTF-8；
+  合成器不重复按键 → 按 `RepeatInfo` 客户端自合成（修饰键不装填）。
+- **坐标**：configure 是逻辑像素，物理 = 逻辑 × 整数 scale（分数缩放 v1 忽略，
+  `set_buffer_scale(u32)` 呈现）；滚轮 value120 优先 discrete 兜底，垂直轴取负
+  （wl 正=向下）。能力近似：resizable=min/max 惯用法、无边框=xdg-decoration
+  best-effort、position/opacity/always-on-top/鼠标抓取/相对鼠标/隐藏光标 = no-op
+  （各自协议属后续项）。
+- **测试**：`tests/wayland_smoke.rs`（skip 门：无合成器打印 skipped 保持绿；
+  CI 在 headless Weston 下真跑：`weston --backend=headless-backend.so
+  --socket=… &` + socket 等待 + `WAYLAND_DISPLAY=… cargo test --test wayland_smoke`）。
+  交互输入（打字/滚轮/关闭）靠真机 Wayland 会话手动验收（VMware Ubuntu VM
+  已确认 Wayland 会话）。
 
 ## 常用命令
 
@@ -95,4 +137,6 @@ CI：`.github/workflows/macos.yml`（macos-14 runner，双 job）——`macos`�
 - `cargo clippy` / `cargo fmt`
 - 远端平台的语法/类型检查（Windows 本机即可，无需对应系统 SDK）：
   `rustup target add <target>` 后 `cargo check --target <target>`
-  常用 target：`x86_64-pc-windows-msvc`、`x86_64-unknown-linux-gnu`、`aarch64-apple-darwin`、`aarch64-apple-ios`、`aarch64-linux-android`、`wasm32-unknown-unknown`
+  常用 target：`x86_64-pc-windows-msvc`、`x86_64-unknown-linux-gnu`、`aarch64-apple-darwin`、`aarch64-apple-ios`、`aarch64-linux-android`、`wasm32-unknown-unknown`。
+  **例外**：Linux target 因 xkbcommon（C 链接依赖，构建期 pkg-config 探测）无法
+  在 Windows 主机交叉检查——其编译验证由 linux.yml 承担

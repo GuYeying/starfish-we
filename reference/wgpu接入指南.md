@@ -103,17 +103,17 @@ pub enum Event {
 
 **平台产生矩阵**（不产生的变体在该平台永不出现）：
 
-| 事件 | Windows | macOS | iOS | Android | Web |
-|---|---|---|---|---|---|
-| CloseRequested | ✅ WM_CLOSE / Alt+F4 | ✅ 关闭按钮 | ❌（v0 无关闭概念） | ✅ Destroy / 返回键 | ❌（关页面即结束） |
-| Resized | ✅ | ✅ | ✅（仅初始；天然全屏不变） | ✅ | ✅ |
-| Focus | ✅ | ✅ | ❌（v0 未接） | ✅ | ✅ |
-| 键盘 / TextInput | ✅ | ✅（NSEvent characters） | ❌（v0 未接） | ✅（IME 提交文本） | ✅（无 IME 组合） |
-| 鼠标 | ✅ | ✅ | ❌（v0 触摸投递未接） | 合成自主手指 | ✅ |
-| 触摸 | ❌ | ❌ | ❌（v0；投递未接） | ✅ | ✅ |
-| RedrawRequested | ✅ WM_PAINT | ❌（帧节奏=宿主 tick） | ❌（CADisplayLink 驱动 tick 本身） | ✅ RedrawNeeded/InitWindow | ✅ rAF 每帧合并 |
-| Suspended / Resumed | ❌ | ✅ 最小化/还原 | ❌（v0 生命周期未接） | ✅ Pause·Stop·TerminateWindow / Resume·InitWindow | ✅ 页面隐藏/可见 |
-| User（自定义） | ✅ 宿主注入 | ✅ 宿主注入 | ✅ 宿主注入（确定性测试通道） | ✅ 宿主注入 | ✅ 宿主注入 |
+| 事件 | Windows | macOS | Linux (Wayland) | iOS | Android | Web |
+|---|---|---|---|---|---|---|
+| CloseRequested | ✅ WM_CLOSE / Alt+F4 | ✅ 关闭按钮 | ✅ toplevel close_request / 连接丢失 | ❌（v0 无关闭概念） | ✅ Destroy / 返回键 | ❌（关页面即结束） |
+| Resized | ✅ | ✅ | ✅ configure / 缩放变化 | ✅（仅初始；天然全屏不变） | ✅ | ✅ |
+| Focus | ✅ | ✅ | ✅ wl_keyboard enter/leave | ❌（v0 未接） | ✅ | ✅ |
+| 键盘 / TextInput | ✅ | ✅（NSEvent characters） | ✅（evdev→KeyCode；xkb 文本；客户端重复合成） | ❌（v0 未接） | ✅（IME 提交文本） | ✅（无 IME 组合） |
+| 鼠标 | ✅ | ✅ | ✅（逻辑×scale=物理） | ❌（v0 触摸投递未接） | 合成自主手指 | ✅ |
+| 触摸 | ❌ | ❌ | ❌（触屏协议未接） | ❌（v0；投递未接） | ✅ | ✅ |
+| RedrawRequested | ✅ WM_PAINT | ❌（帧节奏=宿主 tick） | ✅ 初始 configure 时一条 | ❌（CADisplayLink 驱动 tick 本身） | ✅ RedrawNeeded/InitWindow | ✅ rAF 每帧合并 |
+| Suspended / Resumed | ❌ | ✅ 最小化/还原 | ❌ | ❌（v0 生命周期未接） | ✅ Pause·Stop·TerminateWindow / Resume·InitWindow | ✅ 页面隐藏/可见 |
+| User（自定义） | ✅ 宿主注入 | ✅ 宿主注入 | ✅ 宿主注入 | ✅ 宿主注入（确定性测试通道） | ✅ 宿主注入 | ✅ 宿主注入 |
 
 ---
 
@@ -207,7 +207,7 @@ create_surface → configure → 取帧 → 重配置再取帧，全程零 unsaf
 | iOS | 同左（UIView + layer 句柄） | trait 已实现，待实测 |
 | Android | 同左（ANativeWindow；仅 `Resumed` 期间有效） | trait 已实现，设备端待验 |
 | Web | `window.canvas()` → 交给 wgpu 的 Web 后端（需浏览器 WebGPU） | 访问器就绪，待跑通 |
-| Linux | 后端未实现（stub 返回 `UnsupportedPlatform`） | 见第八节 |
+| Linux | 同左（`wl_display` + `wl_surface` 裸指针；要求 wayland-client 的 `system` 后端） | trait 已实现，wgpu 链路待实测 |
 
 ---
 
@@ -332,11 +332,40 @@ create_surface → configure → 取帧 → 重配置再取帧，全程零 unsaf
   UIApplicationMain 引导期；ObjC 异常靠 `--stderr=` 抓取）判定
   注入事件往返通过；真机待验。
 
-### 5.6 Linux（未实现）
+### 5.6 Linux（**仅 Wayland**，`smithay-client-toolkit` 0.21 + `wayland-client` 0.31）
 
-stub 行为：`Window::new` 返回 `WindowError::UnsupportedPlatform`，
-六 target 编译全绿（事件/类型层完全可用）。计划：先 X11（`x11rb`，
-WSLg 可实测）后 Wayland 横向拆分。落地前**不要**对该端做出货承诺。
+- **X11 已按设计决策放弃**：不支援 X11 会话（XWayland 下跑的也是本后端
+  ——它是原生 Wayland 客户端）。依赖 `system`+`dlopen` 后端：为 wgpu 提供
+  真实 `wl_display*`/`wl_surface*` 指针（纯 Rust 后端没有 display 指针），
+  运行期加载 libwayland 免链接期依赖。构建需 `pkg-config` + `libxkbcommon-dev`
+  （xkbcommon 是 C 链接依赖，**Windows 主机交叉检查 Linux target 因此失效**
+  ——Linux 编译验证由 CI 的 linux.yml 承担）。
+- **sctk 0.21 装配**：0.21 把各模块 `delegate_*!` 宏合并为单一
+  `delegate_dispatch2!`——装配 = `delegate_registry!` +
+  `impl ProvidesRegistryState`（`registry_handlers![OutputState, SeatState]`）
+  + `delegate_dispatch2!` 三件套。
+- **建窗即"空提交"**：xdg toplevel 以一次**不带缓冲的 commit** 映射，合成器
+  回首个 configure 后才画 shm 底色（SlotPool，双缓冲兜底）并提交——此后窗口
+  可见、`size()` 已知。init 里的 `roundtrip` 是全库唯一的阻塞点（与 Windows
+  建窗泵消息同级）。
+- **非阻塞六步泵**：`flush` → `dispatch_pending` → `prepare_read`+`read`
+  （WouldBlock=空闲，wayland-client 内部已消化为 Ok(0)）→ `dispatch_pending`
+  → 客户端按键重复合成 → pop。**连接丢失/协议错误 = 恰好一条
+  `CloseRequested`**（宿主干净退出，Android 退出契约同一哲学）。
+- **键盘**：sctk 给的 `raw_code` 是**裸 evdev 码**（+8 的 xkb 偏移只在它内部
+  查 keysym 用），`translate.rs` 全表映射 W3C `KeyCode`；`TextInput` 为 xkb
+  合成 UTF-8（含 compose）；合成器不重复按键 → 按 `RepeatInfo` 客户端自合成
+  （修饰键不重复）。
+- **坐标**：configure 尺寸是逻辑像素，物理 = 逻辑 × 整数 scale（分数缩放 v1
+  忽略）；滚轮 value120 优先 discrete 兜底，垂直轴取负（wl 正=向下，本库
+  正=向上）。
+- **能力近似表**（文档化取舍）：title/fullscreen/maximize/minimize 真实现；
+  resizable = min=max 尺寸惯用法（xdg 无 resizable 请求）；无边框 =
+  xdg-decoration best-effort；position/opacity/always-on-top/鼠标抓取/相对
+  鼠标/隐藏光标 = no-op（各自协议属后续项）；`set_size` 平铺合成器下仅咨询性。
+- **验证**：CI 在 headless Weston 下跑 `wayland_smoke`（连接→configure→shm
+  提交→事件排空→单窗口守卫→drop 重建）；交互输入（打字/滚轮/关闭）在真机
+  Wayland 会话手动验收。
 
 ---
 
@@ -354,6 +383,8 @@ WSLg 可实测）后 Wayland 横向拆分。落地前**不要**对该端做出�
    `android_main` return 后进程还能复用。
 6. 不要自行泵平台消息循环。
 7. 事件枚举是 `#[non_exhaustive]`：match 请留 `_` 臂。
+8. Linux：所有方法限创建线程；合成器连接丢失/协议错误会以**恰好一条
+   `CloseRequested`** 呈现——收到后退出循环即可，不要再依赖后续事件。
 
 ---
 
@@ -366,11 +397,12 @@ WSLg 可实测）后 Wayland 横向拆分。落地前**不要**对该端做出�
 | Windows | 全套冒烟 | `cargo test` |
 | macOS | CI 冒烟（真实 Mac runner：探针+全套件） | push 后 `gh run watch`（`.github/workflows/macos.yml` 的 `macos` job） |
 | iOS | CI 模拟器冒烟（建窗+注入往返） | 同上的 `ios-sim` job；失败看 result.txt 终态 + `sim_stderr.txt` artifact |
-| Linux | CI 编译矩阵 + stub 契约测试 | push 后 `gh run watch`（`.github/workflows/linux.yml` 的 `linux` job） |
+| Linux | CI 编译矩阵 + headless Weston 下的真实 Wayland 冒烟 | push 后 `gh run watch`（`.github/workflows/linux.yml` 的 `linux` job） |
+| Linux | 本机真实验收（Wayland 会话） | `cargo run --example basic`；卡住用 `WAYLAND_DEBUG=1` 全线协议追踪 |
 | Android | 事件/生命周期日志 | `adb logcat -s starfish`；panic 另加 `RustStdoutStderr` |
 | Android | 打包安装 | `export ANDROID_NDK_ROOT=<ndk> && cargo apk build --features android-demo && adb install -r target/debug/apk/starfish-demo.apk` |
 | Web | 页面日志 + console | `python -m http.server 8000 -d testweb` → http://localhost:8000 （`scripts/build_web.sh` 重打包） |
-| 全平台编译矩阵 | `cargo check --target <t> --features wgpu`（六 target 应全绿） | |
+| 全平台编译矩阵 | `cargo check --target <t> --features wgpu`；**例外**：Linux target 因 xkbcommon（C 链接依赖）无法在 Windows 主机交叉检查，其编译验证由 linux.yml 承担 | |
 
 故障定性方法论（来自《android绑定运行问题与解决方案.md》，通用）：
 先复现并收割崩溃信息（logcat/tombstone），崩点 ≠ 根因；平台编译矩阵
@@ -388,10 +420,13 @@ WSLg 可实测）后 Wayland 横向拆分。落地前**不要**对该端做出�
 | iOS | ~60%（v0：建窗+帧驱动+注入通道；缺：真实触摸、生命周期、键盘/TextInput、真机验证） | CI 模拟器冒烟 ✅（注入事件往返）；真机待验 |
 | Android | ~90%（缺：GameActivity、手势导航、软键盘控制 API、saveInstanceState） | 模拟器实测（四轮快打 0 panic）；真机待复测 |
 | Web | ~85%（缺：IME、rwh Web 注册表、wheel preventDefault） | 事件层已经人肉点验 ✅；wgpu-WebGPU 链路未跑通 |
-| Linux | 0%（stub） | CI 编译矩阵 + 单测（stub 契约）✅ |
+| Linux | ~85%（Wayland-only；缺：触摸、指针约束/相对鼠标、分数缩放、IME preedit、xdg-activation） | CI headless Weston 冒烟 ✅（configure/提交回路 + 单窗口守卫）；交互输入真机待验 |
 
 版本事实：raw-window-handle **0.6**（`#[non_exhaustive]`，用 `new()` 构造器；
 `WindowsDisplayHandle`/`AndroidDisplayHandle` 是空结构；Android 变体名是
 `AndroidNdk`）；wgpu 兼容版本 **30**（`get_current_texture` 返回枚举
 `CurrentSurfaceTexture`，非 Result；`SurfaceConfiguration` 必填 `color_space`）；
-wasm-bindgen 钉在 **0.2.127**（须与 wasm-bindgen-cli 版本精确一致）。
+wasm-bindgen 钉在 **0.2.127**（须与 wasm-bindgen-cli 版本精确一致）；
+Linux = sctk **0.21.1**（`delegate_dispatch2!` 单宏装配）+ wayland-client
+**0.31**（`system`+`dlopen`，wgpu 互操作必需）+ xkbcommon **0.8**（C 链接
+依赖：构建期 pkg-config 探测，Windows 主机不能交叉检查 Linux target）。
