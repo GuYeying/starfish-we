@@ -66,10 +66,20 @@ pub fn ios_start(tick: fn(&Window) -> Option<i32>) -> ! {
     *HOST_TICK
         .lock()
         .expect("HOST_TICK poisoned / HOST_TICK 锁中毒") = Some(tick);
+    // Force-register the delegate class with the ObjC runtime: objc2
+    // registers lazily on first `class()` access, but `UIApplicationMain`
+    // looks the class up by NAME — before any Rust code touches the type
+    // the lookup fails and the app idles with no delegate at all.
+    // 强制向 ObjC 运行时注册委托类：objc2 仅在首次访问 `class()` 时惰性
+    // 注册，而 `UIApplicationMain` 按**名字**查找——若没有 Rust 代码先
+    // 触碰该类型，查找会失败，应用将以无委托状态空转。
+    let _ = <AppDelegate as objc2::ClassType>::class();
+    let registered = objc2::runtime::AnyClass::get(c"StarfishAppDelegate").is_some();
+    eprintln!("[starfish] delegate class registered: {registered} / 委托类已注册: {registered}");
     // SAFETY: argc=0 / argv=null is accepted by UIApplicationMain; the
-    // delegate class name refers to the class declared below.
+    // delegate class name refers to the class registered just above.
     // SAFETY: UIApplicationMain 接受 argc=0、argv=null；委托类名指向
-    // 下方声明的类。
+    // 上方刚注册的类。
     let status = unsafe {
         UIApplicationMain(
             0,
