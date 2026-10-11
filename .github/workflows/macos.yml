@@ -76,15 +76,46 @@ jobs:
       - name: Build smoke binary
         run: cargo build --release --target aarch64-apple-ios-sim --test ios_sim_smoke
 
+      - name: Package minimal app bundle
+        run: |
+          mkdir -p target/ios_smoke.app
+          BIN=$(ls -t target/aarch64-apple-ios-sim/release/deps/ios_sim_smoke-* | grep -v '\.d$' | head -1)
+          cp "$BIN" target/ios_smoke.app/ios_sim_smoke
+          cat > target/ios_smoke.app/Info.plist <<'PLIST'
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>CFBundleExecutable</key><string>ios_sim_smoke</string>
+            <key>CFBundleIdentifier</key><string>com.starfish.iossmoke</string>
+            <key>CFBundleName</key><string>ios_smoke</string>
+            <key>CFBundlePackageType</key><string>APPL</string>
+            <key>CFBundleShortVersionString</key><string>0.1.0</string>
+            <key>CFBundleVersion</key><string>1</string>
+            <key>LSRequiresIPhoneOS</key><true/>
+            <key>MinimumOSVersion</key><string>13.0</string>
+          </dict>
+          </plist>
+          PLIST
+
       - name: Boot an iPhone simulator
         run: |
           UDID=$(xcrun simctl list devices available | awk '/-- iOS/{f=1;next} f&&/ \(/ {print; exit}' | grep -oE '[A-F0-9]{8}-([A-F0-9]{4}-){3}[A-F0-9]{12}' | head -1)
           echo "Booting simulator UDID: $UDID"
           xcrun simctl boot "$UDID"
-          # Wait until the simulator fully boots before spawning anything.
-          # 等模拟器完全启动后再执行任何 spawn。
+          # Wait until the simulator fully boots before launching anything.
+          # 等模拟器完全启动后再 launch。
           xcrun simctl bootstatus "$UDID" -b
-          echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
+
+      - name: Install and run smoke inside the simulator
+        run: |
+          xcrun simctl install booted target/ios_smoke.app
+          # --console-pty forwards the app's stdio AND waits for exit,
+          # returning the app's exit code.
+          # --console-pty 转发应用 stdio 并等待退出、转发退出码。
+          set -o pipefail
+          xcrun simctl launch --console-pty booted com.starfish.iossmoke 2>&1 | tee sim_out.txt
+          grep -q "iOS smoke OK" sim_out.txt
 
       - name: Upload sim output
         if: always()
@@ -93,14 +124,3 @@ jobs:
           name: sim-out
           path: sim_out.txt
           if-no-files-found: ignore
-
-      - name: Run smoke inside the simulator
-        run: |
-          BIN=$(ls -t target/aarch64-apple-ios-sim/release/deps/ios_sim_smoke-* | grep -v '\.d$' | head -1)
-          echo "Running: $BIN"
-          set -o pipefail
-          xcrun simctl spawn "$SIM_UDID" "$BIN" 2>&1 | tee sim_out.txt
-          grep -q "iOS smoke OK" sim_out.txt || true
-          # Always dump captured output for diagnosis.
-          # 无论成败都输出捕获内容便于诊断。
-          cat sim_out.txt
