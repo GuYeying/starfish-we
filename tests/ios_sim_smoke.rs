@@ -31,39 +31,60 @@ mod ios {
         static INJECTED: Cell<bool> = const { Cell::new(false) };
     }
 
+    /// The result file path inside the app container's tmp directory.
+    /// 应用容器 tmp 目录下的结果文件路径。
+    pub fn result_path() -> String {
+        format!(
+            "{}result.txt",
+            unsafe { objc2_foundation::NSTemporaryDirectory() }.to_string()
+        )
+    }
+
     /// Writes the smoke result into the app container's tmp directory.
     /// 将冒烟结果写入应用容器 tmp 目录下的结果文件。
     pub fn write_result(ok: bool, detail: &str) {
-        let tmp = unsafe { objc2_foundation::NSTemporaryDirectory() };
-        let path = format!("{}result.txt", tmp.to_string());
         let content = if ok {
             format!("OK / 通过: {detail}")
         } else {
             format!("FAIL / 失败: {detail}")
         };
-        let _ = std::fs::write(&path, content);
+        let _ = std::fs::write(result_path(), content);
     }
 
     /// The per-frame host tick (called on the main thread via
-    /// CADisplayLink). Frame 0 injects the deterministic test event; the
-    /// test passes once it comes back through the poll.
-    /// 每帧宿主 tick（经 CADisplayLink 在主线程调用）。第 0 帧注入
+    /// CADisplayLink). Frame 0 writes the STARTED marker + installs a
+    /// panic hook that captures crashes into the result file, injects the
+    /// deterministic test event; the test passes once it comes back
+    /// through the poll.
+    /// 每帧宿主 tick（经 CADisplayLink 在主线程调用）。第 0 帧写入
+    /// STARTED 标记并安装 panic 钩子（崩溃信息进结果文件），注入
     /// 确定性测试事件；经 poll 收回即通过。
     pub fn tick(window: &Window) -> Option<i32> {
         let frame = FRAME.get();
         FRAME.set(frame + 1);
 
         if frame == 0 {
+            // Marker: the app reached the tick (distinguishes "crashed
+            // before tick" from "hung in tick").
+            // 标记：应用已到达 tick（区分“tick 前崩溃”与“tick 内挂起”）。
+            let _ = std::fs::write(result_path(), "STARTED");
+
+            // Panic hook: capture crashes into the result file (CI stderr
+            // is invisible).
+            // Panic 钩子：把崩溃信息写进结果文件（CI 上 stderr 不可见）。
+            let hook_path = result_path();
+            std::panic::set_hook(Box::new(move |info| {
+                let _ = std::fs::write(&hook_path, format!("PANIC: {info}"));
+            }));
+
             // Window sanity: nonzero size, UiKit handle.
             // 窗口健全性：非零尺寸 + UiKit 句柄。
             let (w, h) = window.size();
             if w == 0 || h == 0 {
-                eprintln!("window size is zero / 窗口尺寸为零: {w}x{h}");
                 write_result(false, "window size is zero / 窗口尺寸为零");
                 std::process::exit(1);
             }
             if !matches!(window.raw_handle(), RawWindowHandle::UiKit { .. }) {
-                eprintln!("raw_handle is not UiKit / raw_handle 不是 UiKit");
                 write_result(false, "raw_handle is not UiKit / raw_handle 不是 UiKit");
                 std::process::exit(1);
             }
