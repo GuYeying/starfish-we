@@ -30,7 +30,6 @@
 //!   事件注入：`ios_inject_test_event`（crate 根，doc-hidden）将合成
 //!   事件写入与 OS 路径相同的缓冲——模拟器上的确定性事件测试通道。
 //!
-#![allow(deprecated)] // v0 bootstrap uses deprecated initWithFrame/mainScreen on purpose
 //! v0 boundaries (documented, follow-ups): no UIApplicationDelegate
 //! lifecycle (no `Suspended`/`Resumed` yet), real touch delivery requires
 //! a responder subclass (next step), windows use the deprecated
@@ -38,6 +37,8 @@
 //! v0 边界（已记录，后续项）：尚无 UIApplicationDelegate 生命周期
 //! （`Suspended`/`Resumed` 未接入）、真实触摸投递需 responder 子类
 //! （下一步）、有意使用已弃用的 initWithFrame 路径（模拟器已验证）。
+
+pub(crate) mod entry;
 
 use std::collections::VecDeque;
 use std::sync::Mutex;
@@ -121,17 +122,19 @@ impl WindowInner {
         // 平台优先。
         let _ = options.size;
         let bounds = screen_bounds(mtm);
-        let window = // initWithFrame is deprecated in favor of init(windowScene:) but
+        let window = unsafe {
+            // initWithFrame is deprecated in favor of init(windowScene:) but
             // remains functional — including in the simulator (v0 choice,
             // see module docs).
             // initWithFrame 已弃用（推荐 init(windowScene:)）但仍可用——
             // 模拟器内亦然（v0 选择，见模块文档）。
-            UIWindow::initWithFrame(mtm.alloc::<UIWindow>(), bounds);
+            UIWindow::initWithFrame(mtm.alloc::<UIWindow>(), bounds)
+        };
         // Per-pixel transparency ready (clear background); off by default.
         // 逐像素透明就绪（清澈背景色）；默认关闭。
         if options.transparent {
             window.setOpaque(false);
-            let clear = UIColor::clearColor();
+            let clear = unsafe { UIColor::clearColor() };
             window.setBackgroundColor(Some(&clear));
         }
 
@@ -156,8 +159,6 @@ impl WindowInner {
         // 零超时 runloop 泵：排空就绪源且不阻塞，使 UIApplication 机制在
         // 宿主自持的循环内存活。
         objc2_core_foundation::CFRunLoop::run_in_mode(
-            // SAFETY: extern static access; the default-mode constant.
-            // SAFETY: 访问 extern static（默认模式常量）。
             unsafe { objc2_core_foundation::kCFRunLoopDefaultMode },
             0.0,
             false,
@@ -182,7 +183,7 @@ impl WindowInner {
         // hierarchy, retained by the window.
         // SAFETY: 主线程（契约）；layer 由视图层级持有，窗口保活。
         let ui_view = Retained::as_ptr(&self.window) as *mut std::ffi::c_void;
-        let layer = self.window.layer();
+        let layer = unsafe { self.window.layer() };
         let layer_ptr = Retained::as_ptr(&layer) as *mut std::ffi::c_void;
         RawWindowHandle::UiKit {
             ui_view,
@@ -301,7 +302,7 @@ impl WindowInner {
     }
 
     pub(crate) fn set_opacity(&self, opacity: f32) {
-        self.window.setAlpha(opacity.clamp(0.0, 1.0) as f64);
+        self.window.setAlpha(f64::from(opacity.clamp(0.0, 1.0)));
     }
 
     pub(crate) fn opacity(&self) -> f32 {
@@ -311,7 +312,7 @@ impl WindowInner {
     pub(crate) fn dpi_scale(&self) -> f32 {
         // SAFETY: main thread (contract); UIScreen query.
         // SAFETY: 主线程（契约）；UIScreen 查询。
-        UIScreen::mainScreen(self._mtm).scale() as f32
+        unsafe { UIScreen::mainScreen(self._mtm) }.scale() as f32
     }
 
     pub(crate) fn high_pixel_density(&self) -> bool {
@@ -339,14 +340,16 @@ impl Drop for WindowInner {
 /// Bounds of the main screen in points (for the window frame).
 /// 主屏 bounds（点），用于窗口 frame。
 fn screen_bounds(mtm: MainThreadMarker) -> CGRect {
-    UIScreen::mainScreen(mtm).bounds()
+    // SAFETY: main thread (contract); UIScreen query.
+    // SAFETY: 主线程（契约）；UIScreen 查询。
+    unsafe { UIScreen::mainScreen(mtm).bounds() }
 }
 
 /// Physical size of the main screen (bounds × scale).
 /// 主屏物理尺寸（bounds × scale）。
 fn physical_size(mtm: MainThreadMarker) -> (u32, u32) {
     let bounds = screen_bounds(mtm);
-    let scale = UIScreen::mainScreen(mtm).scale();
+    let scale = unsafe { UIScreen::mainScreen(mtm) }.scale() as f64;
     (
         ((bounds.size.width * scale).round() as u32).max(1),
         ((bounds.size.height * scale).round() as u32).max(1),

@@ -96,6 +96,35 @@ pub use android_activity::AndroidApp;
 #[doc(hidden)]
 pub use platform::ios::inject_test_event as ios_inject_test_event;
 
+/// (iOS builds only) Host entry: install the tick and hand the main
+/// thread to UIApplicationMain (never returns).
+/// （仅 iOS 构建）宿主入口：安装 tick 并把主线程交给 UIApplicationMain
+/// （正常情况下永不返回）。
+#[cfg(target_os = "ios")]
+pub use platform::ios::entry::ios_start;
+
+/// (iOS builds only) Host entry macro — the iOS analog of `android_main!`.
+/// （仅 iOS 构建）宿主入口宏——`android_main!` 的 iOS 对应物。
+///
+/// ```ignore
+/// starfish_window::ios_main!(my_tick);
+///
+/// fn my_tick(window: &starfish_window::Window) -> Option<i32> {
+///     // Per-frame: poll events + render + interpreter step.
+///     // 每帧：poll 事件 + 渲染 + 解释器步进。
+///     None // Some(code) exits the app / Some(code) 退出应用
+/// }
+/// ```
+#[cfg(target_os = "ios")]
+#[macro_export]
+macro_rules! ios_main {
+    ($tick:path) => {
+        fn main() -> ! {
+            $crate::ios_start($tick);
+        }
+    };
+}
+
 /// Wait for the next frame — the per-frame yield primitive of the poll
 /// model. Call it unconditionally at the end of the application loop body.
 ///

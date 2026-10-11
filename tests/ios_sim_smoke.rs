@@ -5,79 +5,84 @@
 //! 确定性注入事件测试（`ios_inject_test_event` → poll → `Event::User`
 //! 载荷校验）。
 //!
-//! `harness = false` + dual main: the UIKit backend is main-thread-only,
-//! and non-iOS hosts (Windows `cargo test`) build this file too — the
-//! non-iOS main prints a skip line.
-//! `harness = false` + 双 main：UIKit 后端仅限主线程，且非 iOS 宿主
-//! （Windows 上的 `cargo test`）也会构建本文件——非 iOS 的 main 仅打印
-//! 跳过行。
+//! Entry: `ios_main!(tick)` — the library installs the tick, hands the
+//! main thread to UIApplicationMain, and drives the tick each frame via
+//! CADisplayLink. Returning `Some(code)` exits the app with that status.
+//! 入口：`ios_main!(tick)`——库安装 tick 并把主线程交给
+//! UIApplicationMain，经 CADisplayLink 每帧驱动一次 tick；
+//! 返回 `Some(code)` 即以该状态码退出应用。
 //!
-//! CI runs it via `xcrun simctl spawn` inside a booted iPhone simulator.
-//! CI 通过 `xcrun simctl spawn` 在已启动的 iPhone 模拟器内运行。
+//! CI runs it via `xcrun simctl spawn` inside a booted iPhone simulator
+//! (packaged as a minimal .app bundle).
+//! CI 通过 `xcrun simctl spawn` 在已启动的 iPhone 模拟器内运行
+//! （打包为最小 .app bundle）。
 
 #[cfg(target_os = "ios")]
 mod ios {
+    use std::cell::Cell;
+
     use starfish_window::flags::WindowFlags;
     use starfish_window::{Event, RawWindowHandle, UserEvent, Window};
 
-    pub fn run() -> i32 {
-        std::panic::set_hook(Box::new(|info| eprintln!("panic: {info}")));
+    thread_local! {
+        static FRAME: Cell<u32> = const { Cell::new(0) };
+        static INJECTED: Cell<bool> = const { Cell::new(false) };
+    }
 
-        // 1. Window creation with the real backend (bootstraps
-        //    UIApplication + full-screen UIWindow).
-        // 1. 经真实后端建窗（自动装配 UIApplication + 全屏 UIWindow）。
-        let window = match Window::new("starfish ios smoke", (320, 240), WindowFlags::default()) {
-            Ok(w) => w,
-            Err(err) => {
-                eprintln!("window creation failed / 建窗失败: {err}");
-                return 1;
+    /// The per-frame host tick (called on the main thread via
+    /// CADisplayLink). Frame 0 injects the deterministic test event; the
+    /// test passes once it comes back through the poll.
+    /// 每帧宿主 tick（经 CADisplayLink 在主线程调用）。第 0 帧注入
+    /// 确定性测试事件；经 poll 收回即通过。
+    pub fn tick(window: &Window) -> Option<i32> {
+        let frame = FRAME.get();
+        FRAME.set(frame + 1);
+
+        if frame == 0 {
+            // Window sanity: nonzero size, UiKit handle.
+            // 窗口健全性：非零尺寸 + UiKit 句柄。
+            let (w, h) = window.size();
+            if w == 0 || h == 0 {
+                eprintln!("window size is zero / 窗口尺寸为零: {w}x{h}");
+                return Some(1);
             }
-        };
-
-        // 2. Raw handle must resolve to the UiKit variant.
-        // 2. 裸句柄必须解析为 UiKit 变体。
-        if !matches!(window.raw_handle(), RawWindowHandle::UiKit { .. }) {
-            eprintln!("raw_handle is not UiKit / raw_handle 不是 UiKit");
-            return 1;
+            if !matches!(window.raw_handle(), RawWindowHandle::UiKit { .. }) {
+                eprintln!("raw_handle is not UiKit / raw_handle 不是 UiKit");
+                return Some(1);
+            }
+            // Inject the deterministic test event.
+            // 注入确定性测试事件。
+            starfish_window::ios_inject_test_event(Event::User(UserEvent::new(
+                7,
+                "sim-inject".to_string(),
+            )));
+            return None;
         }
 
-        // 3. Deterministic injected-event test: inject → poll → verify
-        //    payload (the exact "simulated event send" the library
-        //    contract promises).
-        // 3. 确定性注入事件测试：注入 → poll → 校验载荷（即本库承诺的
-        //    "模拟发送事件"通道）。
-        starfish_window::ios_inject_test_event(Event::User(UserEvent::new(
-            7,
-            "sim-inject".to_string(),
-        )));
-
-        let mut got_user = false;
-        for _ in 0..128 {
-            match window.poll_event() {
-                Some(Event::User(user)) if user.code == 7 => {
-                    got_user =
-                        user.downcast_ref::<String>().map(String::as_str) == Some("sim-inject");
-                    break;
+        while let Some(event) = window.poll_event() {
+            if let Event::User(user) = event {
+                if user.code == 7
+                    && user.downcast_ref::<String>().map(String::as_str) == Some("sim-inject")
+                {
+                    println!("iOS smoke OK / iOS 冒烟通过 (frame {frame})");
+                    return Some(0);
                 }
-                Some(_) => {}
-                None => std::thread::sleep(std::time::Duration::from_millis(5)),
             }
         }
-        if !got_user {
-            eprintln!("injected event not received / 未收到注入事件");
-            return 1;
-        }
 
-        println!("iOS smoke OK / iOS 冒烟通过");
-        0
+        // Timeout: 600 frames without the injected event coming back.
+        // 超时：600 帧内注入事件未回流。
+        if frame > 600 {
+            eprintln!("injected event not received within 600 frames / 600 帧内未收到注入事件");
+            return Some(1);
+        }
+        None
     }
 }
 
 fn main() {
     #[cfg(target_os = "ios")]
-    {
-        std::process::exit(ios::run());
-    }
+    starfish_window::ios_main!(ios::tick);
     #[cfg(not(target_os = "ios"))]
     {
         println!("skipped: iOS-only smoke / 非 iOS 平台跳过");
