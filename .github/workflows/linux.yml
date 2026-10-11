@@ -8,6 +8,15 @@ on:
 
 jobs:
   linux:
+    # The Linux backend is still a stub: this job pins the CI floor for
+    # it — the full compile matrix, the backend-less test suite (unit
+    # tests + the stub contract in tests/stub_platform.rs) and a wasm
+    # cross-check — so the future X11 backend lands onto an already
+    # watched, green platform.
+    # Linux 后端仍是 stub：本 job 为它钉住 CI 下限——完整编译矩阵、
+    # 无后端即可运行的测试套件（单测 + tests/stub_platform.rs 的 stub
+    # 契约）以及 wasm 交叉检查——让将来的 X11 后端落地时接手的是
+    # 一个已被看守的绿平台。
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -27,7 +36,12 @@ jobs:
           cargo check
           cargo check --no-default-features
 
-      - name: Test suite (backend-less: unit tests + stub contract)
+      # Step names must not contain a bare `: ` — a colon+space inside a
+      # plain YAML scalar is a parse error ("workflow file issue", run
+      # with zero jobs). Quoted here on purpose.
+      # 步骤名不能含裸 `: `——纯量内的冒号+空格是 YAML 解析错误
+      # （"workflow file issue"、run 零 job）。这里特意加引号。
+      - name: "Test suite (backend-less: unit tests + stub contract)"
         run: cargo test --release --no-fail-fast
 
       - name: Web target cross-check
