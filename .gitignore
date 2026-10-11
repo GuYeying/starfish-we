@@ -1,3 +1,7 @@
 /target
 # Web 打包产物（scripts/build_web.sh 生成）
 /testweb/
+
+# 杂项下载产物 / stray download artifacts
+*.zip
+*.crate
