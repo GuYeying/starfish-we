@@ -29,6 +29,16 @@ jobs:
       - name: Rust build cache
         uses: Swatinem/rust-cache@v2
 
+      - name: Install build deps for the Linux backend
+        # xkbcommon is a C link dep of sctk — pkg-config probes it at
+        # BUILD time (even `cargo check`), so it must exist before any
+        # compile step. weston is the headless compositor the smoke step
+        # runs under.
+        # xkbcommon 是 sctk 的 C 链接依赖——pkg-config 在**构建期**探测
+        # （连 `cargo check` 都要），必须先于一切编译步骤装好。weston 是
+        # 冒烟步骤使用的 headless 合成器。
+        run: sudo apt-get update && sudo apt-get install -y libxkbcommon-dev pkg-config weston
+
       - name: Compile matrix (all / default / no-default features)
         run: |
           set -euxo pipefail
