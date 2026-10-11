@@ -13,8 +13,8 @@ use std::ptr::NonNull;
 
 use raw_window_handle::{
     AndroidDisplayHandle, AndroidNdkWindowHandle, DisplayHandle, HandleError, HasDisplayHandle,
-    HasWindowHandle, RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle,
-    WaylandWindowHandle, Win32WindowHandle, WindowHandle, WindowsDisplayHandle,
+    HasWindowHandle, RawDisplayHandle, RawWindowHandle, WaylandDisplayHandle, WaylandWindowHandle,
+    Win32WindowHandle, WindowHandle, WindowsDisplayHandle,
 };
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
 use raw_window_handle::{WebCanvasWindowHandle, WebDisplayHandle};

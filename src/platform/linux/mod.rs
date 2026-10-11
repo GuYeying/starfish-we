@@ -25,19 +25,19 @@ use smithay_client_toolkit::{
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     seat::{
+        Capability, SeatHandler, SeatState,
         keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers, RepeatInfo},
         pointer::{PointerEvent, PointerHandler},
-        Capability, SeatHandler, SeatState,
     },
     shell::xdg::{
-        window::{Window as SctkWindow, WindowConfigure, WindowHandler},
         XdgShell,
+        window::{Window as SctkWindow, WindowConfigure, WindowHandler},
     },
-    shm::{slot::Buffer, slot::SlotPool, Shm, ShmHandler},
+    shm::{Shm, ShmHandler, slot::Buffer, slot::SlotPool},
 };
 use wayland_client::{
-    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface},
     Connection, QueueHandle,
+    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface},
 };
 
 // ── Wayland state ───────────────────────────────────────────────────
@@ -94,7 +94,7 @@ impl CompositorHandler for WaylandState {
     fn scale_factor_changed(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle,
+        _qh: &QueueHandle<WaylandState>,
         _surface: &wl_surface::WlSurface,
         _new_factor: i32,
     ) {
@@ -103,7 +103,7 @@ impl CompositorHandler for WaylandState {
     fn transform_changed(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle,
+        _qh: &QueueHandle<WaylandState>,
         _surface: &wl_surface::WlSurface,
         _new_transform: wl_output::Transform,
     ) {
@@ -112,7 +112,7 @@ impl CompositorHandler for WaylandState {
     fn frame(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle,
+        _qh: &QueueHandle<WaylandState>,
         _surface: &wl_surface::WlSurface,
         _time: u32,
     ) {
@@ -121,7 +121,7 @@ impl CompositorHandler for WaylandState {
     fn surface_enter(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle,
+        _qh: &QueueHandle<WaylandState>,
         _surface: &wl_surface::WlSurface,
         _output: &wl_output::WlOutput,
     ) {
@@ -130,7 +130,7 @@ impl CompositorHandler for WaylandState {
     fn surface_leave(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle,
+        _qh: &QueueHandle<WaylandState>,
         _surface: &wl_surface::WlSurface,
         _output: &wl_output::WlOutput,
     ) {
@@ -142,12 +142,18 @@ impl OutputHandler for WaylandState {
         &mut self.output_state
     }
 
-    fn new_output(&mut self, _conn: &Connection, _qh: &QueueHandle, _output: wl_output::WlOutput) {}
+    fn new_output(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<WaylandState>,
+        _output: wl_output::WlOutput,
+    ) {
+    }
 
     fn update_output(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle,
+        _qh: &QueueHandle<WaylandState>,
         _output: wl_output::WlOutput,
     ) {
     }
@@ -155,19 +161,25 @@ impl OutputHandler for WaylandState {
     fn output_destroyed(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle,
+        _qh: &QueueHandle<WaylandState>,
         _output: wl_output::WlOutput,
     ) {
     }
 }
 
 impl WindowHandler for WaylandState {
-    fn request_close(&mut self, _conn: &Connection, _qh: &QueueHandle, _window: &SctkWindow) {}
+    fn request_close(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<WaylandState>,
+        _window: &SctkWindow,
+    ) {
+    }
 
     fn configure(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle,
+        _qh: &QueueHandle<WaylandState>,
         _window: &SctkWindow,
         _configure: WindowConfigure,
         _serial: u32,
@@ -180,12 +192,18 @@ impl SeatHandler for WaylandState {
         &mut self.seat_state
     }
 
-    fn new_seat(&mut self, _conn: &Connection, _qh: &QueueHandle, _seat: wl_seat::WlSeat) {}
+    fn new_seat(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<WaylandState>,
+        _seat: wl_seat::WlSeat,
+    ) {
+    }
 
     fn new_capability(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle,
+        _qh: &QueueHandle<WaylandState>,
         _seat: wl_seat::WlSeat,
         _capability: Capability,
     ) {
@@ -194,20 +212,26 @@ impl SeatHandler for WaylandState {
     fn remove_capability(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle,
+        _qh: &QueueHandle<WaylandState>,
         _seat: wl_seat::WlSeat,
         _capability: Capability,
     ) {
     }
 
-    fn remove_seat(&mut self, _conn: &Connection, _qh: &QueueHandle, _seat: wl_seat::WlSeat) {}
+    fn remove_seat(
+        &mut self,
+        _conn: &Connection,
+        _qh: &QueueHandle<WaylandState>,
+        _seat: wl_seat::WlSeat,
+    ) {
+    }
 }
 
 impl KeyboardHandler for WaylandState {
     fn enter(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle,
+        _qh: &QueueHandle<WaylandState>,
         _keyboard: &wl_keyboard::WlKeyboard,
         _surface: &wl_surface::WlSurface,
         _serial: u32,
@@ -219,7 +243,7 @@ impl KeyboardHandler for WaylandState {
     fn leave(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle,
+        _qh: &QueueHandle<WaylandState>,
         _keyboard: &wl_keyboard::WlKeyboard,
         _surface: &wl_surface::WlSurface,
         _serial: u32,
@@ -229,7 +253,7 @@ impl KeyboardHandler for WaylandState {
     fn press_key(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle,
+        _qh: &QueueHandle<WaylandState>,
         _keyboard: &wl_keyboard::WlKeyboard,
         _serial: u32,
         _event: KeyEvent,
@@ -239,7 +263,7 @@ impl KeyboardHandler for WaylandState {
     fn repeat_key(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle,
+        _qh: &QueueHandle<WaylandState>,
         _keyboard: &wl_keyboard::WlKeyboard,
         _serial: u32,
         _event: KeyEvent,
@@ -249,7 +273,7 @@ impl KeyboardHandler for WaylandState {
     fn release_key(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle,
+        _qh: &QueueHandle<WaylandState>,
         _keyboard: &wl_keyboard::WlKeyboard,
         _serial: u32,
         _event: KeyEvent,
@@ -259,7 +283,7 @@ impl KeyboardHandler for WaylandState {
     fn update_modifiers(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle,
+        _qh: &QueueHandle<WaylandState>,
         _keyboard: &wl_keyboard::WlKeyboard,
         _serial: u32,
         _modifiers: Modifiers,
@@ -273,7 +297,7 @@ impl PointerHandler for WaylandState {
     fn pointer_frame(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle,
+        _qh: &QueueHandle<WaylandState>,
         _pointer: &wl_pointer::WlPointer,
         _events: &[PointerEvent],
     ) {
