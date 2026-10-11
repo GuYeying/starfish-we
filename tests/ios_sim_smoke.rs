@@ -28,8 +28,6 @@
 mod ios {
     use std::cell::Cell;
 
-    use objc2_foundation::NSString;
-    use starfish_window::flags::WindowFlags;
     use starfish_window::{Event, RawWindowHandle, UserEvent, Window};
 
     thread_local! {

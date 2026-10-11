@@ -103,11 +103,23 @@ pub use platform::ios::inject_test_event as ios_inject_test_event;
 #[cfg(target_os = "ios")]
 pub use platform::ios::entry::ios_start;
 
-/// (iOS builds only) Host entry macro — the iOS analog of `android_main!`.
-/// （仅 iOS 构建）宿主入口宏——`android_main!` 的 iOS 对应物。
+/// (iOS builds only) Host entry macro — a statement form, called inside
+/// `main`: hands the main thread to UIApplicationMain (never returns).
+/// Unlike `android_main!` (which must define `android_main` at module
+/// top level for the Android glue ABI), iOS has no such ABI contract —
+/// the entry is a plain Rust `main`, so a statement is the right shape.
+/// Defining a `fn main` here instead would silently become a dead nested
+/// function when invoked inside another function body.
+/// （仅 iOS 构建）宿主入口宏——**语句式**，在 `main` 体内调用：把主
+/// 线程交给 UIApplicationMain（永不返回）。与 `android_main!` 不同
+/// （Android glue 的 ABI 要求在模块顶层定义 `android_main`），iOS 没有
+/// 这种 ABI 约定——入口就是普通 Rust `main`，语句才是正确形状。若在
+/// 此定义 `fn main`，被放进另一函数体时会静默变成永不执行的嵌套函数。
 ///
 /// ```ignore
-/// starfish_window::ios_main!(my_tick);
+/// fn main() {
+///     starfish_window::ios_main!(my_tick); // never returns / 永不返回
+/// }
 ///
 /// fn my_tick(window: &starfish_window::Window) -> Option<i32> {
 ///     // Per-frame: poll events + render + interpreter step.
@@ -119,9 +131,7 @@ pub use platform::ios::entry::ios_start;
 #[macro_export]
 macro_rules! ios_main {
     ($tick:path) => {
-        fn main() -> ! {
-            $crate::ios_start($tick);
-        }
+        $crate::ios_start($tick)
     };
 }
 
