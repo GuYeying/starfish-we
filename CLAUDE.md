@@ -85,6 +85,7 @@ CI：`.github/workflows/macos.yml`（macos-14 runner，双 job）——`macos`�
 - **iOS 宿主入口 `ios_main!` 是语句式**：在 `fn main` 体内调用 `starfish_window::ios_main!(tick);`，展开为 `ios_start(tick)`（永不返回）。与 `android_main!` 的差异是刻意的：Android glue 的 ABI 要求顶层定义 `android_main` 函数，iOS 无此约定。**教训：宏若展开成 `fn main` 定义，被放进函数体时会静默变成永不执行的嵌套函数——类型检查全绿、运行时零声响**（iOS 冒烟因此哑火过一整轮）。
 - **objc2 两个 UIKit 装配坑**：① `define_class!` 的类**惰性注册**（首次 `ClassType::class()` 才进 ObjC 运行时），而 `UIApplicationMain` 按**名字**查委托类——必须先 `<AppDelegate as ClassType>::class()` 强制注册；且 objc2 默认类名是 `模块路径::类名+版本`，经名字查找必须 `#[name = "..."]` 固定。② 启动结束时 key window 必须有 `rootViewController`，否则 `NSInternalInconsistencyException`（裸 UIWindow 不够，已挂空控制器）。
 - **iOS 冒烟诊断协议**（`tests/ios_sim_smoke.rs`）：分阶段写数据容器 `tmp/result.txt`——`STARTED`（进程起）→ `FRAME0`（tick 到）→ 终态 `OK`/`FAIL`/`PANIC`（panic 钩子装在 main 最早处，覆盖 UIApplicationMain 引导期）；CI 轮询**终态**（不能见文件即读——最早的 STARTED 瞬间就写入），stderr 经 `simctl launch --stderr=` 抓到宿主文件。**教训：判定步曾用 `grep || true` 掩盖 smoke 从未运行，产出假绿**；stderr/结果文件双通道 + 终态轮询后，NSException 类崩溃（Rust panic 钩子抓不到 ObjC 异常）靠 stderr 回溯定位。
+- **CI 布局与工作流 YAML 陷阱**：`macos.yml`（`macos`+`ios-sim` 双 job）+ `linux.yml`（`linux` job：编译矩阵 + 无后端测试下限（`tests/stub_platform.rs` 断言 stub 平台 `new()` 返回 `UnsupportedPlatform` 且不泄漏单窗口占位）+ wasm 交叉检查）。**工作流 YAML：步骤名含裸 `: `（冒号+空格）即解析错误**——症状是 run 零 job、0 秒失败、run 名退化成文件路径；给名字加引号即可（踩过，二分定位）。
 
 ## 常用命令
 
