@@ -5,34 +5,43 @@
 //! 确定性注入事件测试（`ios_inject_test_event` → poll → `Event::User`
 //! 载荷校验）。
 //!
-//! Entry: `ios_main!(tick)` — the library installs the tick, hands the
-//! main thread to UIApplicationMain, and drives the tick each frame via
-//! CADisplayLink. Returning `Some(code)` exits the app with that status.
-//! 入口：`ios_main!(tick)`——库安装 tick 并把主线程交给
-//! UIApplicationMain，经 CADisplayLink 每帧驱动一次 tick；
-//! 返回 `Some(code)` 即以该状态码退出应用。
+//! Entry: `ios_main!(tick)` — UIApplicationMain owns the main thread and
+//! CADisplayLink drives the tick each frame; the tick returns
+//! `Some(code)` to exit the app with that status.
+//! 入口：`ios_main!(tick)`——UIApplicationMain 掌管主线程，
+//! CADisplayLink 每帧驱动一次 tick；tick 返回 `Some(code)` 即以该状态码
+//! 退出应用。
 //!
-//! CI runs it via `xcrun simctl spawn` inside a booted iPhone simulator
-//! (packaged as a minimal .app bundle).
-//! CI 通过 `xcrun simctl spawn` 在已启动的 iPhone 模拟器内运行
-//! （打包为最小 .app bundle）。
-//!
-//! Note: no CGEvent usage here — event injection APIs are macOS-only and
-//! would fail dyld at load. The deterministic injection goes through the
-//! backend buffer (`ios_inject_test_event`).
-//! 注意：此处不用 CGEvent——事件注入 API 为 macOS 专属，引用会导致
-//! dyld 加载失败。确定性注入走后端缓冲（`ios_inject_test_event`）。
+//! Result protocol: the app writes `OK` / `FAIL: …` into
+//! `tmp/result.txt` inside its data container; CI polls that file via
+//! `simctl get_app_container … data`.
+//! 结果协议：应用将 `OK` / `FAIL: …` 写入数据容器内的 `tmp/result.txt`，
+//! CI 经 `simctl get_app_container … data` 轮询读取。
 
 #[cfg(target_os = "ios")]
 mod ios {
     use std::cell::Cell;
 
+    use objc2_foundation::NSString;
     use starfish_window::flags::WindowFlags;
     use starfish_window::{Event, RawWindowHandle, UserEvent, Window};
 
     thread_local! {
         static FRAME: Cell<u32> = const { Cell::new(0) };
         static INJECTED: Cell<bool> = const { Cell::new(false) };
+    }
+
+    /// Writes the smoke result into the app container's tmp directory.
+    /// 将冒烟结果写入应用容器 tmp 目录下的结果文件。
+    pub fn write_result(ok: bool, detail: &str) {
+        let tmp = unsafe { objc2_foundation::NSTemporaryDirectory() };
+        let path = format!("{}result.txt", tmp.to_string());
+        let content = if ok {
+            format!("OK / 通过: {detail}")
+        } else {
+            format!("FAIL / 失败: {detail}")
+        };
+        let _ = std::fs::write(&path, content);
     }
 
     /// The per-frame host tick (called on the main thread via
@@ -43,9 +52,6 @@ mod ios {
     pub fn tick(window: &Window) -> Option<i32> {
         let frame = FRAME.get();
         FRAME.set(frame + 1);
-        if frame % 100 == 0 {
-            eprintln!("tick frame {frame} / tick 第 {frame} 帧");
-        }
 
         if frame == 0 {
             // Window sanity: nonzero size, UiKit handle.
@@ -53,11 +59,13 @@ mod ios {
             let (w, h) = window.size();
             if w == 0 || h == 0 {
                 eprintln!("window size is zero / 窗口尺寸为零: {w}x{h}");
-                return Some(1);
+                write_result(false, "window size is zero / 窗口尺寸为零");
+                std::process::exit(1);
             }
             if !matches!(window.raw_handle(), RawWindowHandle::UiKit { .. }) {
                 eprintln!("raw_handle is not UiKit / raw_handle 不是 UiKit");
-                return Some(1);
+                write_result(false, "raw_handle is not UiKit / raw_handle 不是 UiKit");
+                std::process::exit(1);
             }
             // Inject the deterministic test event.
             // 注入确定性测试事件。
@@ -73,7 +81,8 @@ mod ios {
                     && user.downcast_ref::<String>().map(String::as_str) == Some("sim-inject")
                 {
                     println!("iOS smoke OK / iOS 冒烟通过 (frame {frame})");
-                    return Some(0);
+                    write_result(true, "injected event roundtrip / 注入事件往返通过");
+                    std::process::exit(0);
                 }
             }
         }
@@ -82,7 +91,11 @@ mod ios {
         // 超时：600 帧内注入事件未回流。
         if frame > 600 {
             eprintln!("injected event not received within 600 frames / 600 帧内未收到注入事件");
-            return Some(1);
+            write_result(
+                false,
+                "injected event not received within 600 frames / 600 帧内未收到注入事件",
+            );
+            std::process::exit(1);
         }
         None
     }
