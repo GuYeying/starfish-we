@@ -324,14 +324,15 @@ impl WindowInner {
         let compositor = Arc::new(CompositorState::bind(&globals, &qh).map_err(|_| {
             WindowError::OsError("wl_compositor not available / wl_compositor 不可用".into())
         })?);
-        let subcompositor = SubcompositorState::bind(
-            compositor.wl_compositor().clone(),
-            &globals,
-            &qh,
-        )
-        .map_err(|_| {
-            WindowError::OsError("wl_subcompositor not available / wl_subcompositor 不可用".into())
-        })?;
+        let subcompositor = Arc::new(
+            SubcompositorState::bind(compositor.wl_compositor().clone(), &globals, &qh).map_err(
+                |_| {
+                    WindowError::OsError(
+                        "wl_subcompositor not available / wl_subcompositor 不可用".into(),
+                    )
+                },
+            )?,
+        );
         let xdg_shell = XdgShell::bind(&globals, &qh).map_err(|_| {
             WindowError::OsError(
                 "xdg_wm_base (xdg-shell) not available / xdg_wm_base（xdg-shell）不可用".into(),
@@ -1028,7 +1029,7 @@ impl SeatHandler for WaylandState {
                 let cursor_surface = self.compositor.create_surface(qh);
                 self.themed_pointer = self
                     .seat_state
-                    .get_pointer_with_theme(
+                    .get_pointer_with_theme::<()>(
                         qh,
                         &seat,
                         self.shm.wl_shm(),
