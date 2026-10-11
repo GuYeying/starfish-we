@@ -577,8 +577,10 @@ impl WindowBuilder {
         self
     }
 
-    /// Initial client size (physical pixels). Defaults to `(800, 600)`.
-    /// 客户区初始尺寸（物理像素）。默认 `(800, 600)`。
+    /// Initial client size (physical pixels). No default — always set it
+    /// (the struct default is `(0, 0)`, and backends clamp that to `1`).
+    /// 客户区初始尺寸（物理像素）。无默认值——务必设置（结构体默认为
+    /// `(0, 0)`，后端会将其钳制为 `1`）。
     pub fn size(mut self, size: (u32, u32)) -> Self {
         self.options.size = size;
         self
@@ -652,31 +654,5 @@ impl WindowBuilder {
     /// 创建窗口。受单窗口约束（见 [`Window::new`]）。
     pub fn build(self) -> Result<Window, WindowError> {
         Window::build(self.options)
-    }
-}
-
-// Stub-platform unit test: implemented platforms (windows / macos / web /
-// android) are excluded — their real-behavior tests live in tests/.
-// stub 平台专属单元测试：已实现平台（windows / macos / web / android）
-// 排除在外——真实行为测试位于 tests/。
-#[cfg(all(
-    test,
-    not(any(
-        windows,
-        target_os = "macos",
-        all(target_arch = "wasm32", target_os = "unknown"),
-        target_os = "android"
-    ))
-))]
-mod tests {
-    use super::*;
-    use crate::flags::WindowFlags;
-
-    #[test]
-    fn stub_backends_report_unsupported() {
-        assert!(matches!(
-            Window::new("t", (1, 1), WindowFlags::default()),
-            Err(WindowError::UnsupportedPlatform)
-        ));
     }
 }

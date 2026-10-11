@@ -1,6 +1,7 @@
-//! Basic demo: create a window and print events until close (the Windows
-//! backend is currently usable).
-//! 基础演示：建窗 + 打印事件直到关闭（Windows 后端当前可用）。
+//! Basic demo: create a window and print events until close. Runs on
+//! Windows and Linux/Wayland (macOS: `cargo run --example basic` too).
+//! 基础演示：建窗 + 打印事件直到关闭。Windows 与 Linux/Wayland 可跑
+//! （macOS 亦可：`cargo run --example basic`）。
 //!
 //! Run: `cargo run --example basic`
 //! 运行：`cargo run --example basic`

@@ -8,15 +8,13 @@ on:
 
 jobs:
   linux:
-    # The Linux backend is still a stub: this job pins the CI floor for
-    # it — the full compile matrix, the backend-less test suite (unit
-    # tests + the stub contract in tests/stub_platform.rs) and a wasm
-    # cross-check — so the future X11 backend lands onto an already
-    # watched, green platform.
-    # Linux 后端仍是 stub：本 job 为它钉住 CI 下限——完整编译矩阵、
-    # 无后端即可运行的测试套件（单测 + tests/stub_platform.rs 的 stub
-    # 契约）以及 wasm 交叉检查——让将来的 X11 后端落地时接手的是
-    # 一个已被看守的绿平台。
+    # The Wayland-only Linux backend: full compile matrix, the test
+    # suite (platform smokes skip without their platform) and a REAL
+    # Wayland smoke run under a headless Weston compositor, plus the
+    # wasm cross-check.
+    # 仅 Wayland 的 Linux 后端：完整编译矩阵、测试套件（缺平台的冒烟
+    # 自动跳过）、headless Weston 合成器下的**真实** Wayland 冒烟，以及
+    # wasm 交叉检查。
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -51,8 +49,39 @@ jobs:
       # with zero jobs). Quoted here on purpose.
       # 步骤名不能含裸 `: `——纯量内的冒号+空格是 YAML 解析错误
       # （"workflow file issue"、run 零 job）。这里特意加引号。
-      - name: "Test suite (backend-less: unit tests + stub contract)"
+      - name: "Test suite (unit tests + platform smokes with skip gates)"
+        # Platform smokes without their platform skip gracefully (iOS
+        # prints "skipped"); wayland_smoke skip-gates on the missing
+        # compositor — the dedicated Weston step below runs it for real.
+        # 平台冒烟在无平台时优雅跳过（iOS 打印 "skipped"）；wayland_smoke
+        # 因缺合成器而跳过——下方专门的 Weston 步骤会真实运行它。
         run: cargo test --release --no-fail-fast
+
+      - name: Wayland smoke under headless Weston
+        # The real backend verification: connect → map → configure → shm
+        # commit → events, all inside one bounded step (weston in the
+        # background, socket wait loop, timeout-wrapped test run).
+        # 真实后端验证：连接 → 映射 → configure → shm 提交 → 事件，全部
+        # 在单个有界步骤内（后台 weston、socket 等待循环、timeout 包裹）。
+        run: |
+          set -euxo pipefail
+          export XDG_RUNTIME_DIR=/tmp/xdg-runtime
+          mkdir -p "$XDG_RUNTIME_DIR"
+          chmod 700 "$XDG_RUNTIME_DIR"
+          weston --backend=headless-backend.so --socket=starfish-ci \
+            --width=800 --height=600 >weston.log 2>&1 &
+          for i in $(seq 1 100); do
+            [ -S "$XDG_RUNTIME_DIR/starfish-ci" ] && break
+            sleep 0.2
+          done
+          if [ ! -S "$XDG_RUNTIME_DIR/starfish-ci" ]; then
+            echo "=== weston.log ==="
+            cat weston.log
+            echo "weston failed to create its socket / weston 未能创建 socket"
+            exit 1
+          fi
+          WAYLAND_DISPLAY=starfish-ci timeout 300 \
+            cargo test --release --test wayland_smoke -- --nocapture
 
       - name: Web target cross-check
         run: cargo check --target wasm32-unknown-unknown --all-features

@@ -11,12 +11,35 @@
 //! libwayland 依赖）。与"系统掌管入口"类平台相同的反转：Wayland 回调把
 //! 事件翻译进缓冲队列，`poll_event` 非阻塞排空。
 //!
+//! Event pump (all steps non-blocking; init-time `roundtrip` is the only
+//! blocking point, mirroring Windows pumping messages in `new`):
+//! 事件泵（各步均非阻塞；仅 init 的 `roundtrip` 阻塞——与 Windows 在
+//! `new` 里泵消息同级）：
+//! `flush` → `dispatch_pending` → `prepare_read`+`read`（WouldBlock =
+//! idle）→ `dispatch_pending` → repeat synthesis → pop.
+//!
+//! Keyboard: sctk hands us RAW evdev codes
+//! (`translate::evdev_to_keycode`) and xkb-composed UTF-8; compositors
+//! don't repeat keys, so repeats are synthesized client-side from
+//! `RepeatInfo`.
+//! 键盘：sctk 交给我们的裸 evdev 码（见 `translate::evdev_to_keycode`）
+//! 与 xkb 合成 UTF-8；合成器不重复按键，重复由客户端按 `RepeatInfo` 合成。
+//!
+//! Coordinates: configure sizes are LOGICAL; physical = logical ×
+//! integer scale. All public sizes/coords are physical.
+//! 坐标：configure 尺寸是逻辑像素；物理 = 逻辑 × 整数 scale。公共
+//! 尺寸/坐标一律物理像素。
+//!
 //! sctk 0.21 wiring (the 0.21 breaking change: all per-module
 //! `delegate_*!` macros were replaced by one `delegate_dispatch2!`):
 //! sctk 0.21 装配（0.21 破坏性变更：各模块 `delegate_*!` 宏合并为单一的
 //! `delegate_dispatch2!`）：
 //! `delegate_registry!` + `impl ProvidesRegistryState` +
 //! `delegate_dispatch2!` — see the bottom of this file.
+
+use std::collections::VecDeque;
+use std::sync::{Mutex, MutexGuard};
+use std::time::{Duration, Instant};
 
 use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
@@ -26,19 +49,38 @@ use smithay_client_toolkit::{
     registry_handlers,
     seat::{
         Capability, SeatHandler, SeatState,
-        keyboard::{KeyEvent, KeyboardHandler, Keysym, Modifiers, RawModifiers, RepeatInfo},
-        pointer::{PointerEvent, PointerHandler},
+        keyboard::{
+            KeyEvent, KeyboardHandler, Keysym, Modifiers as SctkModifiers, RawModifiers, RepeatInfo,
+        },
+        pointer::{PointerEvent, PointerEventKind, PointerHandler},
     },
-    shell::xdg::{
-        XdgShell,
-        window::{Window as SctkWindow, WindowConfigure, WindowHandler},
+    shell::{
+        WaylandSurface,
+        xdg::{
+            XdgShell,
+            window::{
+                DecorationMode, Window as SctkWindow, WindowConfigure, WindowDecorations,
+                WindowHandler,
+            },
+        },
     },
-    shm::{Shm, ShmHandler, slot::Buffer, slot::SlotPool},
+    shm::{
+        self, Shm, ShmHandler,
+        slot::{Buffer, SlotPool},
+    },
 };
 use wayland_client::{
     Connection, QueueHandle,
-    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_surface},
+    globals::registry_queue_init,
+    protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
 };
+
+use crate::error::WindowError;
+use crate::event::{Event, KeyCode as K, Modifiers};
+use crate::handle::RawWindowHandle;
+use crate::window::WindowOptions;
+
+pub(crate) mod translate;
 
 // ── Wayland state ───────────────────────────────────────────────────
 
@@ -49,32 +91,38 @@ use wayland_client::{
 /// sctk handler 触及的全部状态。handler 都在创建线程的
 /// `dispatch_pending(&mut WaylandState)` 内运行，所以逐事件缓冲队列直接
 /// 放这里（无需 static——与 Android 后端不同，这里没有跨线程回调）。
-#[allow(dead_code)] // spike: bodies are filled in with the backend proper
 struct WaylandState {
     registry_state: RegistryState,
     seat_state: SeatState,
     output_state: OutputState,
     shm: Shm,
-    xdg_shell: XdgShell,
     window: SctkWindow,
     pool: SlotPool,
-    /// The buffer currently attached to the surface (double-buffered
-    /// when the compositor hasn't released the previous one).
-    /// 当前挂到 surface 的缓冲（合成器未释放上一帧时走双缓冲）。
+    /// The buffer currently attached to the surface; reset on every
+    /// configure (size changed) — SlotPool double-buffers the
+    /// not-yet-released previous frame.
+    /// 当前挂到 surface 的缓冲；每次 configure（尺寸变化）重置——
+    /// SlotPool 对未释放的上一帧自动双缓冲。
     buffer: Option<Buffer>,
-    /// Surface size in PHYSICAL pixels (configure's logical size × scale).
-    /// surface 物理像素尺寸（configure 逻辑尺寸 × scale）。
-    width: u32,
-    height: u32,
-    /// Integer output scale (`wl_output.scale` / preferred_buffer_scale).
-    /// 整数输出缩放（`wl_output.scale` / preferred_buffer_scale）。
+    /// Surface size in LOGICAL pixels (configure's `new_size`, or the
+    /// requested size when the compositor sends `None`).
+    /// surface 逻辑像素尺寸（configure 的 `new_size`；合成器发 `None`
+    /// 时保持请求尺寸）。
+    logical_w: u32,
+    logical_h: u32,
+    /// Integer output scale. Physical = logical × scale.
+    /// 整数输出缩放。物理 = 逻辑 × scale。
     scale: i32,
     /// True until the compositor's first configure arrives (drives the
-    /// initial draw).
-    /// 首个 configure 到达前为 true（驱动首次绘制）。
+    /// initial draw + first `Resized`/`RedrawRequested`).
+    /// 首个 configure 到达前为 true（驱动首次绘制与首条
+    /// `Resized`/`RedrawRequested`）。
     first_configure: bool,
     fullscreen: bool,
     maximized: bool,
+    /// Decoration mode as last configured (Client ⇒ borderless).
+    /// 最近一次 configure 的装饰模式（Client ⇒ 无边框）。
+    borderless: bool,
     /// Keyboard focus on our surface (wl_keyboard enter/leave).
     /// 键盘焦点在本 surface 上（wl_keyboard enter/leave）。
     keyboard_focus: bool,
@@ -82,46 +130,670 @@ struct WaylandState {
     pointer: Option<wl_pointer::WlPointer>,
     /// Snapshot of the last `update_modifiers` (event-time semantics).
     /// 最近一次 `update_modifiers` 的快照（事件时语义）。
-    modifiers: Modifiers,
-    /// Compositor repeat config (rate/delay); drives client-side repeat
-    /// synthesis — compositors don't repeat keys themselves.
-    /// 合成器重复配置（rate/delay）；驱动客户端侧重复合成——合成器
-    /// 自己不重复按键。
+    modifiers: SctkModifiers,
+    /// Compositor repeat config; drives client-side repeat synthesis —
+    /// compositors don't repeat keys themselves.
+    /// 合成器重复配置；驱动客户端侧重复合成——合成器自己不重复按键。
     repeat_info: RepeatInfo,
+    /// Armed client-side repeat state (disarmed on release/leave).
+    /// 已装填的客户端重复状态（松键/失焦时解除）。
+    repeat: Option<RepeatSynth>,
+    /// Translated events waiting for `poll_event`.
+    /// 等待 `poll_event` 取走的已翻译事件。
+    pending: VecDeque<Event>,
 }
+
+/// Client-side key-repeat synthesizer state.
+/// 客户端按键重复合成器状态。
+struct RepeatSynth {
+    raw_code: u32,
+    key: K,
+    text: Option<String>,
+    next_at: Instant,
+    interval: Duration,
+}
+
+/// Modifier evdev codes — repeating these is meaningless noise for text
+/// hosts.
+/// 修饰键 evdev 码——对文本宿主而言重复它们只是噪音。
+const MODIFIER_CODES: [u32; 8] = [42, 54, 29, 97, 56, 100, 125, 126];
+
+impl WaylandState {
+    /// Fills the whole surface with the backdrop color and presents it.
+    /// The library doesn't render — this just makes the window VISIBLE
+    /// (wgpu hosts present their own frames into the same surface).
+    /// 用底色填满整个 surface 并呈现。本库不渲染——这一步只是让窗口
+    /// **可见**（wgpu 宿主往同一 surface 呈现自己的帧）。
+    fn draw_fill(&mut self) {
+        let (w, h) = self.physical_size();
+        let stride = w as i32 * 4;
+        let buffer = self.buffer.get_or_insert_with(|| {
+            // Out-of-memory is unrecoverable for a windowing library; the
+            // Windows backend panics on equivalent allocation failures too.
+            // 内存耗尽对窗口库不可恢复；Windows 后端对同类分配失败同样 panic。
+            self.pool
+                .create_buffer(w as i32, h as i32, stride, wl_shm::Format::Argb8888)
+                .expect("create wayland shm buffer / 创建 Wayland shm 缓冲失败")
+                .0
+        });
+        let canvas = match self.pool.canvas(buffer) {
+            Some(canvas) => canvas,
+            None => {
+                // The compositor hasn't released the previous frame yet —
+                // SlotPool double-buffering fallback (same as the sctk
+                // example).
+                // 合成器尚未释放上一帧——SlotPool 双缓冲兜底（同 sctk 示例）。
+                let (second, canvas) = self
+                    .pool
+                    .create_buffer(w as i32, h as i32, stride, wl_shm::Format::Argb8888)
+                    .expect("create wayland shm buffer / 创建 Wayland shm 缓冲失败");
+                *buffer = second;
+                canvas
+            }
+        };
+        // ARGB8888 in little-endian memory = byte order [B, G, R, A].
+        // ARGB8888 在小端内存中 = 字节序 [B, G, R, A]。
+        canvas.chunks_exact_mut(4).for_each(|chunk| {
+            chunk.copy_from_slice(&[0x2E, 0x2A, 0x2A, 0xFF]);
+        });
+        self.window
+            .wl_surface()
+            .damage_buffer(0, 0, w as i32, h as i32);
+        self.window.set_buffer_scale(self.scale);
+        buffer
+            .attach_to(self.window.wl_surface())
+            .expect("buffer attach / 缓冲挂接失败");
+        self.window.commit();
+    }
+
+    /// Physical size = logical × scale (our public pixel convention).
+    /// 物理尺寸 = 逻辑 × scale（本库公共像素约定）。
+    fn physical_size(&self) -> (u32, u32) {
+        let s = self.scale.max(1) as u32;
+        (self.logical_w * s, self.logical_h * s)
+    }
+
+    /// Snapshot of the current modifier set (our type from sctk's).
+    /// 当前修饰键快照（从 sctk 类型转到本库类型）。
+    fn current_modifiers(&self) -> Modifiers {
+        Modifiers {
+            shift: self.modifiers.shift,
+            ctrl: self.modifiers.ctrl,
+            alt: self.modifiers.alt,
+            meta: self.modifiers.logo,
+        }
+    }
+}
+
+// ── WindowInner ─────────────────────────────────────────────────────
+
+/// The Linux platform window implementation (Wayland).
+/// Linux 平台窗口实现（Wayland）。
+///
+/// All methods run on the creating thread (Wayland + sctk requirement);
+/// the Mutex exists to keep `&self` methods mutating the shared core and
+/// to make the type `Sync` for renderer bounds — the same trade-off as
+/// the other backends.
+/// 所有方法在创建线程上调用（Wayland + sctk 的要求）；Mutex 是为了让
+/// `&self` 方法能改动共享核心并满足渲染端的 `Sync` bound——与其他后端
+/// 同一取舍。
+pub(crate) struct WindowInner {
+    core: Mutex<WaylandCore>,
+}
+
+struct WaylandCore {
+    conn: Connection,
+    queue: wayland_client::event_queue::EventQueue<WaylandState>,
+    state: WaylandState,
+    /// The title we last set (round-trips through `title()`).
+    /// 最近设置的标题（供 `title()` 往返）。
+    title: String,
+    /// `resizable` is an illusion on xdg (min/max-size idiom) — we track
+    /// the requested value plus the min/max to restore.
+    /// xdg 上 `resizable` 是种假象（min/max-size 惯用法）——记录请求值
+    /// 与待恢复的 min/max。
+    resizable: bool,
+    min_size: Option<(u32, u32)>,
+    max_size: Option<(u32, u32)>,
+    visible: bool,
+    /// A fatal connection/protocol error surfaces as exactly one
+    /// `CloseRequested` (hosts exit cleanly; the Android exit-contract
+    /// philosophy).
+    /// 致命连接/协议错误转化为恰好一条 `CloseRequested`（宿主干净退出；
+    /// 与 Android 退出契约同一哲学）。
+    dead: bool,
+}
+
+impl WindowInner {
+    pub(crate) fn new(options: &WindowOptions) -> Result<Self, WindowError> {
+        // 1. Connect to the compositor (WAYLAND_DISPLAY / WAYLAND_SOCKET).
+        // 1. 连接合成器（WAYLAND_DISPLAY / WAYLAND_SOCKET）。
+        let conn = Connection::connect_to_env().map_err(|err| {
+            WindowError::OsError(
+                format!(
+                    "failed to connect to a Wayland compositor (WAYLAND_DISPLAY not set?) / 无法连接 Wayland 合成器（WAYLAND_DISPLAY 未设置？）: {err}"
+                )
+                .into_boxed_str(),
+            )
+        })?;
+
+        // 2. Registry enumeration — the first (blocking) roundtrip.
+        // 2. 注册表枚举——第一次（阻塞）往返。
+        let (globals, queue) = registry_queue_init::<WaylandState>(&conn).map_err(|err| {
+            WindowError::OsError(
+                format!("wayland registry init failed / Wayland 注册表初始化失败: {err}")
+                    .into_boxed_str(),
+            )
+        })?;
+        let qh = queue.handle();
+
+        // 3. Bind the globals we cannot live without.
+        // 3. 绑定不可或缺的全局。
+        let compositor = CompositorState::bind(&globals, &qh).map_err(|_| {
+            WindowError::OsError("wl_compositor not available / wl_compositor 不可用".into())
+        })?;
+        let xdg_shell = XdgShell::bind(&globals, &qh).map_err(|_| {
+            WindowError::OsError(
+                "xdg_wm_base (xdg-shell) not available / xdg_wm_base（xdg-shell）不可用".into(),
+            )
+        })?;
+        let shm = Shm::bind(&globals, &qh)
+            .map_err(|_| WindowError::OsError("wl_shm not available / wl_shm 不可用".into()))?;
+
+        // 4. Surface → xdg window.
+        // 4. Surface → xdg 窗口。
+        let surface = compositor.create_surface(&qh);
+        let window = xdg_shell.create_window(surface, WindowDecorations::RequestServer, &qh);
+
+        // 5. Apply options (all sizes here are logical — scale is 1 until
+        //    the first output attach).
+        // 5. 应用选项（此处尺寸均为逻辑像素——首个 output 附着前 scale=1）。
+        if !options.title.is_empty() {
+            window.set_title(options.title.clone());
+        }
+        window.set_app_id("starfish-we");
+        let (req_w, req_h) = (options.size.0.max(1), options.size.1.max(1));
+        if let Some((min_w, min_h)) = options.min_size {
+            window.set_min_size(Some((min_w, min_h)));
+        }
+        if let Some((max_w, max_h)) = options.max_size {
+            window.set_max_size(Some((max_w, max_h)));
+        }
+        // xdg has no "resizable" request: a fixed-size window is the
+        // min=max idiom (the compositor then refuses interactive resizes).
+        // xdg 没有"可调"请求：固定尺寸窗口 = min=max 惯用法（合成器随后
+        // 拒绝交互式调整）。
+        if !options.resizable {
+            window.set_min_size(Some((req_w, req_h)));
+            window.set_max_size(Some((req_w, req_h)));
+        }
+        // Borderless is best-effort: compositors implementing
+        // xdg-decoration honor the Client-mode request; others ignore it.
+        // 无边框是 best-effort：实现 xdg-decoration 的合成器会尊重
+        // Client 模式请求；其余忽略。
+        if options.borderless {
+            window.request_decoration_mode(Some(DecorationMode::Client));
+        }
+        // transparent/layered: documented no-ops on Wayland v1 (no opaque
+        // region is set, so per-pixel alpha works with a client-rendered
+        // transparent buffer anyway).
+        // transparent/layered：Wayland v1 文档化 no-op（不设 opaque
+        // region，客户端渲染透明缓冲时逐像素 alpha 本就可用）。
+
+        // 6. Pixel pool for the visibility backdrop.
+        // 6. 可见性底色的像素池。
+        let pool = SlotPool::new((4 * req_w * req_h) as usize, &shm).map_err(|err| {
+            WindowError::OsError(
+                format!("wl_shm pool creation failed / wl_shm 池创建失败: {err}").into_boxed_str(),
+            )
+        })?;
+
+        let mut state = WaylandState {
+            registry_state: RegistryState::new(&globals),
+            seat_state: SeatState::new(&globals, &qh),
+            output_state: OutputState::new(&globals, &qh),
+            shm,
+            window,
+            pool,
+            buffer: None,
+            logical_w: req_w,
+            logical_h: req_h,
+            scale: 1,
+            first_configure: true,
+            fullscreen: false,
+            maximized: false,
+            borderless: options.borderless,
+            keyboard_focus: false,
+            keyboard: None,
+            pointer: None,
+            modifiers: SctkModifiers {
+                ctrl: false,
+                alt: false,
+                shift: false,
+                caps_lock: false,
+                logo: false,
+                num_lock: false,
+            },
+            repeat_info: RepeatInfo::Disable,
+            repeat: None,
+            pending: VecDeque::new(),
+        };
+
+        // 7. Map the window: an initial EMPTY commit → the compositor
+        //    replies with the first configure (which draws the backdrop
+        //    and queues Resized/RedrawRequested). Hidden windows stay
+        //    uncommitted (unmapped) until `set_visible(true)`.
+        // 7. 映射窗口：初始**空 commit** → 合成器回首个 configure（其中
+        //    画底色并入队 Resized/RedrawRequested）。HIDDEN 窗口保持未
+        //    提交（不映射），直到 `set_visible(true)`。
+        let hidden = options.hidden;
+        if !hidden {
+            state.window.commit();
+            // Bounded roundtrips: the configure handler runs inside these
+            // and flips `first_configure`. A compositor that never
+            // configures just leaves the requested size in place.
+            // 有界往返：configure 回调在其中运行并翻转 `first_configure`。
+            // 从不 configure 的合成器则保持请求尺寸。
+            for _ in 0..3 {
+                queue.roundtrip(&mut state).map_err(|err| {
+                    WindowError::OsError(
+                        format!("wayland roundtrip failed / Wayland 往返失败: {err}")
+                            .into_boxed_str(),
+                    )
+                })?;
+                if !state.first_configure {
+                    break;
+                }
+            }
+        }
+        let visible = !hidden;
+
+        Ok(Self {
+            core: Mutex::new(WaylandCore {
+                conn,
+                queue,
+                state,
+                title: options.title.clone(),
+                resizable: options.resizable,
+                min_size: options.min_size,
+                max_size: options.max_size,
+                visible,
+                dead: false,
+            }),
+        })
+    }
+
+    fn lock_core(&self) -> MutexGuard<'_, WaylandCore> {
+        // Poison tolerance: a panic in a handler must not wedge the
+        // window; clear the queue on the way in (Android's pattern).
+        // 毒锁容忍：handler 内的 panic 不能永久卡死窗口；进入时清队列
+        // （Android 的手法）。
+        self.core.lock().unwrap_or_else(|poisoned| {
+            let mut guard = poisoned.into_inner();
+            guard.state.pending.clear();
+            guard
+        })
+    }
+
+    pub(crate) fn poll_event(&self) -> Option<Event> {
+        let mut core = self.lock_core();
+        if core.dead {
+            return core.state.pending.pop_front();
+        }
+
+        // 1) Flush outbound requests; a full socket buffer is transient.
+        // 1) 冲刷出站请求；socket 缓冲满属暂时性。
+        if let Err(err) = core.queue.flush() {
+            if !is_would_block(&err) {
+                return core.die();
+            }
+        }
+        // 2) Dispatch already-buffered events.
+        // 2) 派发已缓冲事件。
+        if core.queue.dispatch_pending(&mut core.state).is_err() {
+            return core.die();
+        }
+        // 3) Try to read more from the socket — WouldBlock simply means
+        //    "nothing new" (the read path is WouldBlock-aware internally).
+        // 3) 尝试从 socket 再读——WouldBlock 只表示"没有新事件"（读路径
+        //    内部即按 WouldBlock 处理）。
+        let read = core.queue.prepare_read().map(|guard| guard.read());
+        match &read {
+            Some(Err(err)) if !is_would_block(err) => return core.die(),
+            _ => {}
+        }
+        // 4) Dispatch what step 3 read.
+        // 4) 派发第 3 步读到的事件。
+        if read.is_some() && core.queue.dispatch_pending(&mut core.state).is_err() {
+            return core.die();
+        }
+        // 5) Client-side key-repeat synthesis.
+        // 5) 客户端按键重复合成。
+        synthesize_repeat(&mut core.state);
+        // 6) One event out.
+        // 6) 取走一条事件。
+        core.state.pending.pop_front()
+    }
+
+    pub(crate) fn size(&self) -> (u32, u32) {
+        self.lock_core().state.physical_size()
+    }
+
+    pub(crate) fn set_title(&self, title: &str) {
+        let mut core = self.lock_core();
+        core.title = title.to_string();
+        core.state.window.set_title(title.to_string());
+    }
+
+    pub(crate) fn title(&self) -> String {
+        self.lock_core().title.clone()
+    }
+
+    pub(crate) fn raw_handle(&self) -> RawWindowHandle {
+        let core = self.lock_core();
+        RawWindowHandle::Wayland {
+            // SAFETY: the `system` wayland backend guarantees real
+            // libwayland pointers; validity = the Window's lifetime.
+            // SAFETY：`system` wayland 后端保证这是真实 libwayland 指针；
+            // 有效性 = Window 的存活期。
+            display: core.conn.backend().display_ptr() as *mut std::ffi::c_void,
+            surface: core.state.window.wl_surface().id().as_ptr() as *mut std::ffi::c_void,
+        }
+    }
+
+    pub(crate) fn set_resizable(&self, resizable: bool) {
+        let mut core = self.lock_core();
+        core.resizable = resizable;
+        // The min/max idiom: restoring = clear both bounds (None).
+        // min/max 惯用法：恢复 = 清空两个边界（None）。
+        let (min, max) = if resizable {
+            (core.min_size, core.max_size)
+        } else {
+            let size = core.state.physical_size();
+            (Some(size), Some(size))
+        };
+        core.state.window.set_min_size(min);
+        core.state.window.set_max_size(max);
+    }
+
+    pub(crate) fn is_resizable(&self) -> bool {
+        self.lock_core().resizable
+    }
+
+    pub(crate) fn set_size(&self, width: u32, height: u32) {
+        let mut core = self.lock_core();
+        if core.dead {
+            return;
+        }
+        // Advisory on tiling compositors (documented): we redraw our
+        // buffer at the requested size; the toplevel frame may ignore it.
+        // 平铺合成器下属咨询性操作（已文档化）：按请求尺寸重绘缓冲；
+        // toplevel 边框可能无视。
+        core.state.logical_w = width.max(1);
+        core.state.logical_h = height.max(1);
+        core.state.buffer = None;
+        core.state.draw_fill();
+        let (w, h) = core.state.physical_size();
+        core.state.pending.push_back(Event::Resized {
+            width: w,
+            height: h,
+        });
+    }
+
+    pub(crate) fn set_fullscreen(&self, fullscreen: bool) {
+        let mut core = self.lock_core();
+        if fullscreen {
+            core.state.window.set_fullscreen(None);
+        } else {
+            core.state.window.unset_fullscreen();
+        }
+    }
+
+    pub(crate) fn is_fullscreen(&self) -> bool {
+        self.lock_core().state.fullscreen
+    }
+
+    pub(crate) fn set_borderless(&self, borderless: bool) {
+        let mut core = self.lock_core();
+        core.borderless = borderless;
+        // Best-effort: honored by compositors implementing xdg-decoration.
+        // Best-effort：实现 xdg-decoration 的合成器会尊重。
+        core.state
+            .window
+            .request_decoration_mode(Some(if borderless {
+                DecorationMode::Client
+            } else {
+                DecorationMode::Server
+            }));
+    }
+
+    pub(crate) fn is_borderless(&self) -> bool {
+        self.lock_core().borderless
+    }
+
+    pub(crate) fn set_mouse_grabbed(&self, _grabbed: bool) {
+        // Pointer confinement (zwp_pointer_constraints_v1) is a follow-up.
+        // 指针约束（zwp_pointer_constraints_v1）属后续项。
+    }
+
+    pub(crate) fn is_mouse_grabbed(&self) -> bool {
+        false
+    }
+
+    pub(crate) fn set_mouse_relative(&self, _enable: bool) {
+        // zwp_relative_pointer_v1 is a follow-up.
+        // zwp_relative_pointer_v1 属后续项。
+    }
+
+    pub(crate) fn set_cursor_visible(&self, _visible: bool) {
+        // Wayland cursors require a cursor surface/shape protocol — v1
+        // documented limitation (the OS default cursor always shows).
+        // Wayland 光标需要 cursor surface/shape 协议——v1 文档化限制
+        // （系统默认光标始终显示）。
+    }
+
+    pub(crate) fn is_cursor_visible(&self) -> bool {
+        true
+    }
+
+    pub(crate) fn set_visible(&self, visible: bool) {
+        let mut core = self.lock_core();
+        if core.dead || core.visible == visible {
+            return;
+        }
+        core.visible = visible;
+        if visible {
+            core.state.draw_fill();
+        } else {
+            // Unmap: attach no buffer and commit.
+            // 解映射：挂空缓冲并提交。
+            core.state.window.wl_surface().attach(None, 0, 0);
+            core.state.window.commit();
+        }
+    }
+
+    pub(crate) fn is_visible(&self) -> bool {
+        self.lock_core().visible
+    }
+
+    pub(crate) fn set_always_on_top(&self, _top: bool) {
+        // No xdg equivalent (xdg-activation is about focus tokens).
+        // xdg 无对应请求（xdg-activation 管的是焦点令牌）。
+    }
+
+    pub(crate) fn is_always_on_top(&self) -> bool {
+        false
+    }
+
+    pub(crate) fn minimize(&self) {
+        self.lock_core().state.window.set_minimized();
+    }
+
+    pub(crate) fn maximize(&self) {
+        self.lock_core().state.window.set_maximized();
+    }
+
+    pub(crate) fn restore(&self) {
+        let mut core = self.lock_core();
+        core.state.window.unset_maximized();
+        core.state.window.unset_fullscreen();
+    }
+
+    pub(crate) fn raise(&self) {
+        // No xdg raise request; the compositor decides stacking.
+        // xdg 无 raise 请求；堆叠由合成器决定。
+    }
+
+    pub(crate) fn is_minimized(&self) -> bool {
+        // No reliable signal reaches clients; documented approximation.
+        // 客户端拿不到可靠信号；文档化近似。
+        false
+    }
+
+    pub(crate) fn is_maximized(&self) -> bool {
+        self.lock_core().state.maximized
+    }
+
+    pub(crate) fn has_input_focus(&self) -> bool {
+        self.lock_core().state.keyboard_focus
+    }
+
+    pub(crate) fn is_occluded(&self) -> bool {
+        false
+    }
+
+    pub(crate) fn set_keyboard_grabbed(&self, _grab: bool) {}
+
+    pub(crate) fn set_position(&self, _x: i32, _y: i32) {
+        // Compositor-decided on Wayland.
+        // Wayland 上由合成器决定。
+    }
+
+    pub(crate) fn position(&self) -> (i32, i32) {
+        (0, 0)
+    }
+
+    pub(crate) fn center_on_screen(&self) {}
+
+    pub(crate) fn set_opacity(&self, _opacity: f32) {}
+
+    pub(crate) fn opacity(&self) -> f32 {
+        1.0
+    }
+
+    pub(crate) fn dpi_scale(&self) -> f32 {
+        self.lock_core().state.scale as f32
+    }
+
+    pub(crate) fn high_pixel_density(&self) -> bool {
+        true
+    }
+}
+
+impl WaylandCore {
+    /// Converts a fatal connection error into exactly one
+    /// `CloseRequested`, then hands the caller whatever is queued.
+    /// 把致命连接错误转化为恰好一条 `CloseRequested`，随后交还队列中
+    /// 已有的事件。
+    fn die(&mut self) -> Option<Event> {
+        if !self.dead {
+            self.dead = true;
+            self.state.repeat = None;
+            self.state.pending.clear();
+            self.state.pending.push_back(Event::CloseRequested);
+        }
+        self.state.pending.pop_front()
+    }
+}
+
+/// `WouldBlock` is not an error in the pump — it means "idle".
+/// `WouldBlock` 在泵里不是错误——含义是"空闲"。
+fn is_would_block(err: &wayland_client::WaylandError) -> bool {
+    matches!(
+        err,
+        wayland_client::WaylandError::Io(io) if io.kind() == std::io::ErrorKind::WouldBlock
+    )
+}
+
+/// Pushes `KeyDown{repeat:true}` + `TextInput` for every due repeat tick
+/// (bounded per poll so a starved host can't amass an event avalanche).
+/// 每个到期的重复节拍推一条 `KeyDown{repeat:true}` + `TextInput`
+/// （单次 poll 有界，避免被饿死的宿主积压事件雪崩）。
+fn synthesize_repeat(state: &mut WaylandState) {
+    let now = Instant::now();
+    let due = state.repeat.as_mut().map_or(0, |rep| {
+        let mut n = 0;
+        while rep.next_at <= now && n < 32 {
+            rep.next_at += rep.interval;
+            n += 1;
+        }
+        n
+    });
+    for _ in 0..due {
+        let Some(rep) = &state.repeat else { break };
+        state.pending.push_back(Event::KeyDown {
+            key: rep.key,
+            modifiers: state.current_modifiers(),
+            repeat: true,
+        });
+        if let Some(text) = &rep.text {
+            state
+                .pending
+                .push_back(Event::TextInput { text: text.clone() });
+        }
+    }
+}
+
+// ── sctk handlers (callbacks → PENDING translations) ────────────────
+// ── sctk handler（回调 → PENDING 翻译）────────────────────────────────
 
 impl CompositorHandler for WaylandState {
     fn scale_factor_changed(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<WaylandState>,
+        _qh: &QueueHandle<Self>,
         _surface: &wl_surface::WlSurface,
-        _new_factor: i32,
+        new_factor: i32,
     ) {
+        if self.scale != new_factor {
+            self.scale = new_factor;
+            self.buffer = None;
+            let (w, h) = self.physical_size();
+            self.pending.push_back(Event::Resized {
+                width: w,
+                height: h,
+            });
+        }
     }
 
     fn transform_changed(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<WaylandState>,
+        _qh: &QueueHandle<Self>,
         _surface: &wl_surface::WlSurface,
         _new_transform: wl_output::Transform,
     ) {
+        // 90°-rotated outputs are a documented v1 non-goal.
+        // 90° 旋转输出是文档化的 v1 非目标。
     }
 
     fn frame(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<WaylandState>,
+        _qh: &QueueHandle<Self>,
         _surface: &wl_surface::WlSurface,
         _time: u32,
     ) {
+        // Frame callbacks drive continuous rendering; this library has no
+        // render loop (hosts tick + present themselves / wgpu-auto).
+        // frame 回调驱动连续渲染；本库没有渲染循环（宿主自行 tick +
+        // 呈现 / wgpu-auto）。
     }
 
     fn surface_enter(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<WaylandState>,
+        _qh: &QueueHandle<Self>,
         _surface: &wl_surface::WlSurface,
         _output: &wl_output::WlOutput,
     ) {
@@ -130,7 +802,7 @@ impl CompositorHandler for WaylandState {
     fn surface_leave(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<WaylandState>,
+        _qh: &QueueHandle<Self>,
         _surface: &wl_surface::WlSurface,
         _output: &wl_output::WlOutput,
     ) {
@@ -145,7 +817,7 @@ impl OutputHandler for WaylandState {
     fn new_output(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<WaylandState>,
+        _qh: &QueueHandle<Self>,
         _output: wl_output::WlOutput,
     ) {
     }
@@ -153,7 +825,7 @@ impl OutputHandler for WaylandState {
     fn update_output(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<WaylandState>,
+        _qh: &QueueHandle<Self>,
         _output: wl_output::WlOutput,
     ) {
     }
@@ -161,29 +833,57 @@ impl OutputHandler for WaylandState {
     fn output_destroyed(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<WaylandState>,
+        _qh: &QueueHandle<Self>,
         _output: wl_output::WlOutput,
     ) {
     }
 }
 
 impl WindowHandler for WaylandState {
-    fn request_close(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<WaylandState>,
-        _window: &SctkWindow,
-    ) {
+    fn request_close(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _window: &SctkWindow) {
+        // Title-bar close button / compositor-initiated close.
+        // 标题栏关闭按钮 / 合成器发起的关闭。
+        self.pending.push_back(Event::CloseRequested);
     }
 
     fn configure(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<WaylandState>,
+        _qh: &QueueHandle<Self>,
         _window: &SctkWindow,
-        _configure: WindowConfigure,
+        configure: WindowConfigure,
         _serial: u32,
     ) {
+        // A new size may mean a new buffer; SlotPool handles the
+        // not-yet-released previous frame via its double-buffer fallback.
+        // 新尺寸可能意味着新缓冲；SlotPool 以双缓冲兜底处理未释放的
+        // 上一帧。
+        self.buffer = None;
+        let old = (self.logical_w, self.logical_h);
+        if let Some(w) = configure.new_size.0 {
+            self.logical_w = w.get();
+        }
+        if let Some(h) = configure.new_size.1 {
+            self.logical_h = h.get();
+        }
+        self.fullscreen = configure.state.is_fullscreen();
+        self.maximized = configure.state.is_maximized();
+        self.borderless = configure.decoration_mode == DecorationMode::Client;
+
+        self.draw_fill();
+
+        let changed = (self.logical_w, self.logical_h) != old;
+        if self.first_configure || changed {
+            let (w, h) = self.physical_size();
+            self.pending.push_back(Event::Resized {
+                width: w,
+                height: h,
+            });
+        }
+        if self.first_configure {
+            self.first_configure = false;
+            self.pending.push_back(Event::RedrawRequested);
+        }
     }
 }
 
@@ -192,38 +892,59 @@ impl SeatHandler for WaylandState {
         &mut self.seat_state
     }
 
-    fn new_seat(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<WaylandState>,
-        _seat: wl_seat::WlSeat,
-    ) {
-    }
+    fn new_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _seat: wl_seat::WlSeat) {}
 
     fn new_capability(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<WaylandState>,
-        _seat: wl_seat::WlSeat,
-        _capability: Capability,
+        qh: &QueueHandle<Self>,
+        seat: wl_seat::WlSeat,
+        capability: Capability,
     ) {
+        match capability {
+            Capability::Keyboard if self.keyboard.is_none() => {
+                // `get_keyboard` (not `get_keyboard_with_repeat`) — the
+                // repeat helper is calloop-gated and we synthesize
+                // repeats ourselves.
+                // 用 `get_keyboard`（非 `get_keyboard_with_repeat`）——
+                // repeat 辅助器被 calloop 门控，重复我们自行合成。
+                self.keyboard = self.seat_state.get_keyboard(qh, &seat, None).ok();
+            }
+            Capability::Pointer if self.pointer.is_none() => {
+                self.pointer = self.seat_state.get_pointer(qh, &seat).ok();
+            }
+            _ => {}
+        }
     }
 
     fn remove_capability(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<WaylandState>,
+        _qh: &QueueHandle<Self>,
         _seat: wl_seat::WlSeat,
-        _capability: Capability,
+        capability: Capability,
     ) {
+        match capability {
+            Capability::Keyboard => {
+                if let Some(keyboard) = self.keyboard.take() {
+                    keyboard.release();
+                }
+                self.repeat = None;
+                if self.keyboard_focus {
+                    self.keyboard_focus = false;
+                    self.pending.push_back(Event::FocusLost);
+                }
+            }
+            Capability::Pointer => {
+                if let Some(pointer) = self.pointer.take() {
+                    pointer.release();
+                }
+            }
+            _ => {}
+        }
     }
 
-    fn remove_seat(
-        &mut self,
-        _conn: &Connection,
-        _qh: &QueueHandle<WaylandState>,
-        _seat: wl_seat::WlSeat,
-    ) {
+    fn remove_seat(&mut self, _conn: &Connection, _qh: &QueueHandle<Self>, _seat: wl_seat::WlSeat) {
     }
 }
 
@@ -231,65 +952,121 @@ impl KeyboardHandler for WaylandState {
     fn enter(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<WaylandState>,
+        _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
-        _surface: &wl_surface::WlSurface,
+        surface: &wl_surface::WlSurface,
         _serial: u32,
         _raw: &[u32],
         _keysyms: &[Keysym],
     ) {
+        if self.window.wl_surface() == surface && !self.keyboard_focus {
+            self.keyboard_focus = true;
+            self.pending.push_back(Event::FocusGained);
+        }
     }
 
     fn leave(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<WaylandState>,
+        _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
-        _surface: &wl_surface::WlSurface,
+        surface: &wl_surface::WlSurface,
         _serial: u32,
     ) {
+        if self.window.wl_surface() == surface && self.keyboard_focus {
+            self.keyboard_focus = false;
+            self.repeat = None;
+            self.pending.push_back(Event::FocusLost);
+        }
     }
 
     fn press_key(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<WaylandState>,
+        _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
         _serial: u32,
-        _event: KeyEvent,
+        event: KeyEvent,
     ) {
+        let key = translate::evdev_to_keycode(event.raw_code);
+        let text = event.utf8.filter(|t| !t.is_empty());
+        self.pending.push_back(Event::KeyDown {
+            key,
+            modifiers: self.current_modifiers(),
+            repeat: false,
+        });
+        if let Some(text) = &text {
+            self.pending
+                .push_back(Event::TextInput { text: text.clone() });
+        }
+        // Arm the client-side repeat (modifier keys don't repeat).
+        // 装填客户端重复（修饰键不重复）。
+        self.repeat = match &self.repeat_info {
+            RepeatInfo::Repeat { rate, delay } if !MODIFIER_CODES.contains(&event.raw_code) => {
+                Some(RepeatSynth {
+                    raw_code: event.raw_code,
+                    key,
+                    text,
+                    next_at: Instant::now() + Duration::from_millis(u64::from(*delay)),
+                    interval: Duration::from_secs_f64(1.0 / f64::from(rate.get())),
+                })
+            }
+            _ => None,
+        };
     }
 
     fn repeat_key(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<WaylandState>,
+        _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
         _serial: u32,
-        _event: KeyEvent,
+        event: KeyEvent,
     ) {
+        // wl_keyboard v10 compositors that repeat themselves.
+        // 自行重复的 wl_keyboard v10 合成器。
+        self.pending.push_back(Event::KeyDown {
+            key: translate::evdev_to_keycode(event.raw_code),
+            modifiers: self.current_modifiers(),
+            repeat: true,
+        });
+        if let Some(text) = event.utf8.filter(|t| !t.is_empty()) {
+            self.pending.push_back(Event::TextInput { text });
+        }
     }
 
     fn release_key(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<WaylandState>,
+        _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
         _serial: u32,
-        _event: KeyEvent,
+        event: KeyEvent,
     ) {
+        if self
+            .repeat
+            .as_ref()
+            .is_some_and(|r| r.raw_code == event.raw_code)
+        {
+            self.repeat = None;
+        }
+        self.pending.push_back(Event::KeyUp {
+            key: translate::evdev_to_keycode(event.raw_code),
+            modifiers: self.current_modifiers(),
+        });
     }
 
     fn update_modifiers(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<WaylandState>,
+        _qh: &QueueHandle<Self>,
         _keyboard: &wl_keyboard::WlKeyboard,
         _serial: u32,
-        _modifiers: Modifiers,
+        modifiers: SctkModifiers,
         _raw_modifiers: RawModifiers,
         _layout: u32,
     ) {
+        self.modifiers = modifiers;
     }
 }
 
@@ -297,10 +1074,66 @@ impl PointerHandler for WaylandState {
     fn pointer_frame(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<WaylandState>,
+        _qh: &QueueHandle<Self>,
         _pointer: &wl_pointer::WlPointer,
-        _events: &[PointerEvent],
+        events: &[PointerEvent],
     ) {
+        use PointerEventKind::*;
+        for event in events {
+            // Events for other surfaces are not ours to translate.
+            // 其他 surface 的事件不归我们翻译。
+            if event.surface != *self.window.wl_surface() {
+                continue;
+            }
+            let scale = self.scale.max(1);
+            match event.kind {
+                Enter { .. } | Leave { .. } => {}
+                Motion { .. } => {
+                    // Logical → physical pixels.
+                    // 逻辑 → 物理像素。
+                    self.pending.push_back(Event::MouseMoved {
+                        x: event.position.0 * f64::from(scale),
+                        y: event.position.1 * f64::from(scale),
+                    });
+                }
+                Press { button, .. } => {
+                    self.pending.push_back(Event::MouseDown {
+                        button: translate::mouse_button(button),
+                    });
+                }
+                Release { button, .. } => {
+                    self.pending.push_back(Event::MouseUp {
+                        button: translate::mouse_button(button),
+                    });
+                }
+                Axis {
+                    horizontal,
+                    vertical,
+                    ..
+                } => {
+                    // wl vertical axis: positive = scroll DOWN → our
+                    // convention is positive = UP, so negate. Horizontal
+                    // already matches (positive = right).
+                    // wl 垂直轴：正 = 向下滚 → 本库约定正 = 向上，取负。
+                    // 水平轴本就一致（正 = 向右）。
+                    if horizontal.value120 != 0 || horizontal.discrete != 0 {
+                        self.pending.push_back(Event::MouseWheel {
+                            delta_x: translate::wheel_delta(
+                                horizontal.value120,
+                                horizontal.discrete,
+                            ),
+                            delta_y: 0.0,
+                        });
+                    }
+                    if vertical.value120 != 0 || vertical.discrete != 0 {
+                        self.pending.push_back(Event::MouseWheel {
+                            delta_x: 0.0,
+                            delta_y: -translate::wheel_delta(vertical.value120, vertical.discrete),
+                        });
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -323,102 +1156,17 @@ impl ProvidesRegistryState for WaylandState {
 
 smithay_client_toolkit::delegate_dispatch2!(WaylandState);
 
-// ── WindowInner (stub until the backend proper lands) ───────────────
-// ── WindowInner（后端主体落地前保持 stub）────────────────────────────
-
-use crate::error::WindowError;
-use crate::event::Event;
-use crate::handle::RawWindowHandle;
-use crate::window::WindowOptions;
-
-/// The Linux platform window implementation (Wayland).
-/// Linux 平台窗口实现（Wayland）。
-pub(crate) struct WindowInner;
-
-impl WindowInner {
-    pub(crate) fn new(_options: &WindowOptions) -> Result<Self, WindowError> {
-        Err(WindowError::UnsupportedPlatform) // backend proper lands next / 后端主体随后落地
-    }
-
-    pub(crate) fn set_resizable(&self, _resizable: bool) {}
-    pub(crate) fn is_resizable(&self) -> bool {
-        false
-    }
-    pub(crate) fn set_size(&self, _width: u32, _height: u32) {}
-    pub(crate) fn set_fullscreen(&self, _fullscreen: bool) {}
-    pub(crate) fn is_fullscreen(&self) -> bool {
-        false
-    }
-    pub(crate) fn set_borderless(&self, _borderless: bool) {}
-    pub(crate) fn is_borderless(&self) -> bool {
-        false
-    }
-    pub(crate) fn set_mouse_grabbed(&self, _grabbed: bool) {}
-    pub(crate) fn is_mouse_grabbed(&self) -> bool {
-        false
-    }
-    pub(crate) fn set_mouse_relative(&self, _enable: bool) {}
-    pub(crate) fn set_cursor_visible(&self, _visible: bool) {}
-    pub(crate) fn is_cursor_visible(&self) -> bool {
-        true
-    }
-    pub(crate) fn set_visible(&self, _visible: bool) {}
-    pub(crate) fn is_visible(&self) -> bool {
-        true
-    }
-    pub(crate) fn set_always_on_top(&self, _top: bool) {}
-    pub(crate) fn is_always_on_top(&self) -> bool {
-        false
-    }
-    pub(crate) fn minimize(&self) {}
-    pub(crate) fn maximize(&self) {}
-    pub(crate) fn restore(&self) {}
-    pub(crate) fn raise(&self) {}
-    pub(crate) fn is_minimized(&self) -> bool {
-        false
-    }
-    pub(crate) fn is_maximized(&self) -> bool {
-        false
-    }
-    pub(crate) fn has_input_focus(&self) -> bool {
-        false
-    }
-    pub(crate) fn is_occluded(&self) -> bool {
-        false
-    }
-    pub(crate) fn set_keyboard_grabbed(&self, _grab: bool) {}
-    pub(crate) fn set_position(&self, _x: i32, _y: i32) {}
-    pub(crate) fn position(&self) -> (i32, i32) {
-        (0, 0)
-    }
-    pub(crate) fn center_on_screen(&self) {}
-    pub(crate) fn title(&self) -> String {
-        String::new()
-    }
-    pub(crate) fn set_opacity(&self, _opacity: f32) {}
-    pub(crate) fn opacity(&self) -> f32 {
-        1.0
-    }
-    pub(crate) fn dpi_scale(&self) -> f32 {
-        1.0
-    }
-    pub(crate) fn high_pixel_density(&self) -> bool {
-        false
-    }
-
-    pub(crate) fn poll_event(&self) -> Option<Event> {
-        None
-    }
-
-    pub(crate) fn size(&self) -> (u32, u32) {
-        (0, 0)
-    }
-
-    pub(crate) fn set_title(&self, _title: &str) {}
-
-    pub(crate) fn raw_handle(&self) -> RawWindowHandle {
-        unreachable!(
-            "backend not implemented for this platform; a Window cannot exist / 该平台后端尚未实现，Window 不可能被构造"
-        )
+impl Drop for WindowInner {
+    fn drop(&mut self) {
+        let Ok(mut core) = self.core.lock() else {
+            return;
+        };
+        if core.dead {
+            return;
+        }
+        // Best-effort surface destroy; closing the connection makes the
+        // compositor reclaim everything else.
+        // Best-effort 销毁 surface；连接关闭后合成器会回收其余对象。
+        let _ = core.state.window.wl_surface().destroy();
     }
 }
