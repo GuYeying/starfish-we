@@ -114,10 +114,13 @@ struct WaylandState {
     /// Adwaita client-side decorations (Some means drawn as subsurfaces).
     /// Adwaita 客户端装饰（Some 表示以子表面绘制）。
     frame: Option<AdwaitaFrame<WaylandState>>,
+    /// The CSD frame draws through subsurfaces created from this.
+    /// CSD 装饰框经此创建子表面。
+    subcompositor: Arc<SubcompositorState>,
     /// Pointer with a cursor theme — drives the resize-edge cursor icons
     /// the frame requests.
     /// 带光标主题的指针——响应装饰框请求的缩放边缘光标。
-    themed_pointer: Option<ThemedPointer<WaylandState>>,
+    themed_pointer: Option<ThemedPointer<()>>,
     /// Title text mirror for the frame (set before the frame exists).
     /// 装饰框的标题文本镜像（框创建前先行保存）。
     title: String,
@@ -390,6 +393,7 @@ impl WindowInner {
             seat_state: SeatState::new(&globals, &qh),
             output_state: OutputState::new(&globals, &qh),
             compositor: compositor.clone(),
+            subcompositor: subcompositor.clone(),
             shm,
             window,
             pool,
@@ -898,7 +902,7 @@ impl WindowHandler for WaylandState {
     fn configure(
         &mut self,
         _conn: &Connection,
-        _qh: &QueueHandle<Self>,
+        qh: &QueueHandle<Self>,
         _window: &SctkWindow,
         configure: WindowConfigure,
         _serial: u32,
@@ -1334,7 +1338,7 @@ impl WaylandState {
     /// 最大化/拖拽/缩放）。
     fn frame_action(&mut self, pointer: &wl_pointer::WlPointer, serial: u32, action: FrameAction) {
         let seat = pointer
-            .data::<PointerData>()
+            .data::<PointerData<()>>()
             .map(|data| data.seat().clone());
         match action {
             FrameAction::Close => self.pending.push_back(Event::CloseRequested),
