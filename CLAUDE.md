@@ -57,7 +57,7 @@ Mutex 仅为保住 `Window: Sync`），**平台模块零感知**；载荷 `Any+S
 
 windows / linux(ubuntu) / macos / ios / android / web(wasm)。
 
-当前状态：**Windows 后端已实现并通过冒烟测试**（真实建窗/事件/单窗口守卫），其余五平台仍为 stub（返回 `UnsupportedPlatform`）。公共 API：`Window` / `Event` / `KeyCode` / `Modifiers` / `MouseButton` / `WindowError` / `RawWindowHandle`。各平台在 `src/platform/<os>/` 平行实现同一套 `WindowInner` 接口，经 `platform::imp` 做 cfg 分发；单窗口由 `Window::new` 内的 `AtomicBool` 占位保证。
+当前状态：**Windows / macOS / iOS(模拟器) 后端已实现且冒烟通过**（Windows 本地真实建窗；macOS+iOS 由 `.github/workflows/macos.yml` 双 job 自动验证）；Android / Web 已实现（打包手动测试）；Linux 仍为 stub（返回 `UnsupportedPlatform`）。公共 API：`Window` / `Event` / `KeyCode` / `Modifiers` / `MouseButton` / `WindowError` / `RawWindowHandle`。各平台在 `src/platform/<os>/` 平行实现同一套 `WindowInner` 接口，经 `platform::imp` 做 cfg 分发；单窗口由 `Window::new` 内的 `AtomicBool` 占位保证。
 
 Windows 后端分层（值得沿用到其他后端）：`platform/windows/mod.rs` 只管建窗、`PeekMessageW` 泵、状态挂载（`GWLP_USERDATA`）与系统默认兜底；消息→`Event` 的翻译全部在 `platform/windows/translate.rs`（仅 `event` feature 编译，返回 `Option<LRESULT>`，`None` 回落系统默认）。因此 `--no-default-features --features window`（仅建窗）同样成立。
 
@@ -77,6 +77,14 @@ Windows 后端分层（值得沿用到其他后端）：`platform/windows/mod.rs
 - **Android 打包**：`export ANDROID_NDK_ROOT=D:/SDK/Android/ndk/30.0.16248370 && cargo apk build --features android-demo`（根包，无需 -p）→ `target/debug/apk/starfish-demo.apk`，`adb install` 安装，`adb logcat -s starfish` 看事件。APK 元数据在根 Cargo.toml `[package.metadata.android]`。本机 SDK 平台目录叫 `android-37.0`，已建 junction `platforms/android-37` 供 cargo-apk 识别（Google 源被网络拦截，sdkmanager 装不了别的平台）。注意 `[lib] crate-type = ["lib","cdylib"]`（APK 需要），桌面构建会多产出一个动态库文件属已知成本；cargo-apk 会尝试把 examples 也打包成 cdylib（对 `examples/basic` 报 `libbasic.so` 不存在——**非致命**，退出码仍 0，APK 正常产出）。
 - **rwh/wgpu（Android）**：`RawWindowHandle::AndroidNdk(AndroidNdkWindowHandle::new(NonNull))`（注意 rwh 0.6 变体名叫 AndroidNdk 不是 Android）；display 侧 `AndroidDisplayHandle::new()` 空结构。
 - **示例注意**：examples/web_demo.rs 的 wasm 代码逐项 `#[cfg]`，`fn main` 无条件保留（cargo test/clippy 在宿主构建示例）。
+
+## macOS / iOS 后端（已实现，GitHub Actions 冒烟）
+
+CI：`.github/workflows/macos.yml`（macos-14 runner，双 job）——`macos`：三目标编译矩阵 + 真实 NSWindow 探针（注入事件，`--test-threads=1` 保 MainThreadMarker）+ 全测试套件；`ios-sim`：编译检查 → 打包最小 .app（Info.plist + 可执行）→ `simctl install+launch` → **结果文件协议**判定。
+
+- **iOS 宿主入口 `ios_main!` 是语句式**：在 `fn main` 体内调用 `starfish_window::ios_main!(tick);`，展开为 `ios_start(tick)`（永不返回）。与 `android_main!` 的差异是刻意的：Android glue 的 ABI 要求顶层定义 `android_main` 函数，iOS 无此约定。**教训：宏若展开成 `fn main` 定义，被放进函数体时会静默变成永不执行的嵌套函数——类型检查全绿、运行时零声响**（iOS 冒烟因此哑火过一整轮）。
+- **objc2 两个 UIKit 装配坑**：① `define_class!` 的类**惰性注册**（首次 `ClassType::class()` 才进 ObjC 运行时），而 `UIApplicationMain` 按**名字**查委托类——必须先 `<AppDelegate as ClassType>::class()` 强制注册；且 objc2 默认类名是 `模块路径::类名+版本`，经名字查找必须 `#[name = "..."]` 固定。② 启动结束时 key window 必须有 `rootViewController`，否则 `NSInternalInconsistencyException`（裸 UIWindow 不够，已挂空控制器）。
+- **iOS 冒烟诊断协议**（`tests/ios_sim_smoke.rs`）：分阶段写数据容器 `tmp/result.txt`——`STARTED`（进程起）→ `FRAME0`（tick 到）→ 终态 `OK`/`FAIL`/`PANIC`（panic 钩子装在 main 最早处，覆盖 UIApplicationMain 引导期）；CI 轮询**终态**（不能见文件即读——最早的 STARTED 瞬间就写入），stderr 经 `simctl launch --stderr=` 抓到宿主文件。**教训：判定步曾用 `grep || true` 掩盖 smoke 从未运行，产出假绿**；stderr/结果文件双通道 + 终态轮询后，NSException 类崩溃（Rust panic 钩子抓不到 ObjC 异常）靠 stderr 回溯定位。
 
 ## 常用命令
 
