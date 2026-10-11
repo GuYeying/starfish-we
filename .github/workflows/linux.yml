@@ -14,10 +14,21 @@ jobs:
 
       - name: Install Rust toolchain
         uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-unknown-unknown
 
-      - name: Compile matrix
+      - name: Rust build cache
+        uses: Swatinem/rust-cache@v2
+
+      - name: Compile matrix (all / default / no-default features)
         run: |
           set -euxo pipefail
           cargo check --all-features
           cargo check
           cargo check --no-default-features
+
+      - name: Test suite (backend-less: unit tests + stub contract)
+        run: cargo test --release --no-fail-fast
+
+      - name: Web target cross-check
+        run: cargo check --target wasm32-unknown-unknown --all-features
