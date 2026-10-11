@@ -57,9 +57,14 @@ loop {
 | Platform | Window | Events | Rendering | Status |
 |---|---|---|---|---|
 | Windows | ✅ | ✅ keys/mouse/wheel/focus | ✅ wgpu verified on real hardware | usable |
+| macOS | ✅ | ✅ keys/mouse/wheel/focus + miniaturize→Suspended/Resumed | handles ready (wgpu path untested) | usable (CI smoke-verified) |
+| iOS | ✅ full-screen | ⚠️ v0: injection channel only — touch/lifecycle/keyboard pending | handles ready | v0 (CI simulator smoke ✅) |
 | Android | ✅ | ✅ incl. touch + lifecycle | ✅ handles ready | usable (emulator-verified) |
 | Web (wasm) | ✅ canvas | ✅ incl. touch + page visibility | `Window::canvas()` | usable |
-| Linux / macOS / iOS | — | — | — | planned (stubs) |
+| Linux | — | — | — | planned (stub) |
+
+Every push runs the macOS + iOS-simulator smoke matrix on GitHub's Mac
+runners (`.github/workflows/macos.yml`).
 
 Platform driving principles, the event semantics matrix, caveats and
 diagnostics live in the

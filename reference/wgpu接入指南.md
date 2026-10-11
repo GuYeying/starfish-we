@@ -103,17 +103,17 @@ pub enum Event {
 
 **平台产生矩阵**（不产生的变体在该平台永不出现）：
 
-| 事件 | Windows | Android | Web |
-|---|---|---|---|
-| CloseRequested | ✅ WM_CLOSE / Alt+F4 | ✅ Destroy / 返回键 | ❌（关页面即结束） |
-| Resized | ✅ | ✅ | ✅ |
-| Focus | ✅ | ✅ | ✅ |
-| 键盘 / TextInput | ✅ | ✅（IME 提交文本） | ✅（无 IME 组合） |
-| 鼠标 | ✅ | 合成自主手指 | ✅ |
-| 触摸 | ❌ | ✅ | ✅ |
-| RedrawRequested | ✅ WM_PAINT | ✅ RedrawNeeded/InitWindow | ✅ rAF 每帧合并 |
-| Suspended / Resumed | ❌ | ✅ Pause·Stop·TerminateWindow / Resume·InitWindow | ✅ 页面隐藏/可见 |
-| User（自定义） | ✅ 宿主注入 | ✅ 宿主注入 | ✅ 宿主注入 |
+| 事件 | Windows | macOS | iOS | Android | Web |
+|---|---|---|---|---|---|
+| CloseRequested | ✅ WM_CLOSE / Alt+F4 | ✅ 关闭按钮 | ❌（v0 无关闭概念） | ✅ Destroy / 返回键 | ❌（关页面即结束） |
+| Resized | ✅ | ✅ | ✅（仅初始；天然全屏不变） | ✅ | ✅ |
+| Focus | ✅ | ✅ | ❌（v0 未接） | ✅ | ✅ |
+| 键盘 / TextInput | ✅ | ✅（NSEvent characters） | ❌（v0 未接） | ✅（IME 提交文本） | ✅（无 IME 组合） |
+| 鼠标 | ✅ | ✅ | ❌（v0 触摸投递未接） | 合成自主手指 | ✅ |
+| 触摸 | ❌ | ❌ | ❌（v0；投递未接） | ✅ | ✅ |
+| RedrawRequested | ✅ WM_PAINT | ❌（帧节奏=宿主 tick） | ❌（CADisplayLink 驱动 tick 本身） | ✅ RedrawNeeded/InitWindow | ✅ rAF 每帧合并 |
+| Suspended / Resumed | ❌ | ✅ 最小化/还原 | ❌（v0 生命周期未接） | ✅ Pause·Stop·TerminateWindow / Resume·InitWindow | ✅ 页面隐藏/可见 |
+| User（自定义） | ✅ 宿主注入 | ✅ 宿主注入 | ✅ 宿主注入（确定性测试通道） | ✅ 宿主注入 | ✅ 宿主注入 |
 
 ---
 
@@ -203,9 +203,11 @@ create_surface → configure → 取帧 → 重配置再取帧，全程零 unsaf
 | 平台 | surface 来源 | 状态 |
 |---|---|---|
 | Windows | `create_surface(&window)`（HWND+HINSTANCE 自动携带） | **真机实测** ✅ |
+| macOS | 同左（NSWindow 的 view + layer 句柄自动携带） | trait 已实现，wgpu 链路待实测 |
+| iOS | 同左（UIView + layer 句柄） | trait 已实现，待实测 |
 | Android | 同左（ANativeWindow；仅 `Resumed` 期间有效） | trait 已实现，设备端待验 |
 | Web | `window.canvas()` → 交给 wgpu 的 Web 后端（需浏览器 WebGPU） | 访问器就绪，待跑通 |
-| Linux / macOS / iOS | 后端未实现（stub 返回 `UnsupportedPlatform`） | 见第八节 |
+| Linux | 后端未实现（stub 返回 `UnsupportedPlatform`） | 见第八节 |
 
 ---
 
@@ -277,13 +279,64 @@ create_surface → configure → 取帧 → 重配置再取帧，全程零 unsaf
 - 已知边界：IME 组合过程不上报（只收最终字符）；代理对字符首版丢弃；
   wheel 监听未 `preventDefault`（页面本身无滚动即可）。
 
-### 5.4 Linux / macOS / iOS（未实现）
+### 5.4 macOS（AppKit，`objc2` 家族）
+
+- **机制**：`poll_event` 用 `nextEventMatchingMask` 非阻塞泵干可用
+  NSEvent——输入事件（键/文本/鼠标）直接翻译进缓冲；窗口级事件
+  `sendEvent` 派发给 AppKit 以触发窗口委托（关闭→`CloseRequested`、
+  resize→`Resized`、焦点、**最小化→`Suspended` / 还原→`Resumed`**），
+  然后取队头。AppKit 仅限主线程（存储 `MainThreadMarker` 强制）。
+- 键码 = `NSEvent keyCode` 携带的 Carbon 虚拟键码，`translate.rs`
+  全表映射到 `KeyCode`；`TextInput` 取 NSEvent characters（无 IME
+  组合过程，与 Windows 首版约定一致）。
+- **没有 `RedrawRequested`**：macOS 后端未接线；帧节奏就是宿主
+  tick（解释器驱动），与 AppKit 的 drawRect 机制解耦。
+- 创建时激活应用（否则后台状态下窗口拿不到键盘焦点）。
+- 验证：CI 在 GitHub 的真实 Mac runner 上跑 WindowServer 探针
+  （真实 NSApplication+NSWindow 建窗 + 注入事件往返）+ 全测试套件；
+  **wgpu surface 链路未实测**（`HasWindowHandle` 是平台无关实现，
+  理论直通）。
+
+### 5.5 iOS（UIKit，`objc2` 家族）
+
+- **入口（语句式宏）**：在 `fn main` 体内一行接入：
+  ```rust
+  fn main() {
+      starfish_window::ios_main!(my_tick);   // 把主线程交给 UIApplicationMain，永不返回
+  }
+  fn my_tick(window: &starfish_window::Window) -> Option<i32> {
+      // 每帧经 CADisplayLink 在主线程调用：poll 事件 + 渲染
+      None // Some(code) 以该状态码退出应用
+  }
+  ```
+  与 `android_main!` 的差异是刻意的：Android glue 的 ABI 要求顶层
+  定义 `android_main` 函数；iOS 无此约定，**语句才是正确形状**
+  （宏若展开成 `fn main` 定义，放进函数体会静默变成永不执行的
+  嵌套函数——已踩过：类型检查全绿、运行时零声响）。
+- **机制反转**（与 Android 同装置）：委托 `didFinishLaunching` 建窗
+  （全屏 UIWindow + rootViewController）并安装 CADisplayLink；每帧
+  驱动宿主 tick；`poll_event` 排空缓冲队列 + 零超时 runloop 泵。
+  `Window::new` 在 iOS 上由入口内部调用，宿主不要自行调用。
+- **装配坑（已编码修复，勿回退）**：① objc2 的类是惰性注册的，且
+  默认运行时名含模块路径+版本——`UIApplicationMain` 按**名字**查
+  委托类，必须先 `ClassType::class()` 强制注册 + `#[name]` 固定名；
+  ② 启动结束时 key window 必须有 `rootViewController`，否则 UIKit
+  抛 `NSInternalInconsistencyException`。
+- 坐标 = bounds × scale（物理像素约定一致）；窗口天然全屏、无边框、
+  不可调（平台固有属性，能力方法为固定值 no-op）。
+- **v0 边界**：事件仅注入通道（`ios_inject_test_event`，确定性
+  测试用）；真实触摸投递（需 responder 子类）、生命周期
+  `Suspended`/`Resumed`、键盘/TextInput 均未接。
+- 验证：CI 在 iPhone 模拟器内跑冒烟（`simctl install+launch`），
+  结果文件协议 `STARTED→FRAME0→OK/FAIL/PANIC`（panic 钩子覆盖
+  UIApplicationMain 引导期；ObjC 异常靠 `--stderr=` 抓取）判定
+  注入事件往返通过；真机待验。
+
+### 5.6 Linux（未实现）
 
 stub 行为：`Window::new` 返回 `WindowError::UnsupportedPlatform`，
-六 target 编译全绿（事件/类型层完全可用）。计划：Linux 先 X11（`x11rb`，
-WSLg 可实测）后 Wayland 横向拆分；Apple 系用 `objc2` 家族
-（macOS=NSWindow+NSEvent 泵，iOS=UIWindow+CAMetalLayer+缓冲队列）。
-落地前**不要**对这三端做出货承诺。
+六 target 编译全绿（事件/类型层完全可用）。计划：先 X11（`x11rb`，
+WSLg 可实测）后 Wayland 横向拆分。落地前**不要**对该端做出货承诺。
 
 ---
 
@@ -311,6 +364,8 @@ WSLg 可实测）后 Wayland 横向拆分；Apple 系用 `objc2` 家族
 | Windows | 窗口+事件演示 | `cargo run --example basic` |
 | Windows | wgpu 集成回归 | `cargo test --features wgpu --test wgpu_integration` |
 | Windows | 全套冒烟 | `cargo test` |
+| macOS | CI 冒烟（真实 Mac runner：探针+全套件） | push 后 `gh run watch`（`.github/workflows/macos.yml` 的 `macos` job） |
+| iOS | CI 模拟器冒烟（建窗+注入往返） | 同上的 `ios-sim` job；失败看 result.txt 终态 + `sim_stderr.txt` artifact |
 | Android | 事件/生命周期日志 | `adb logcat -s starfish`；panic 另加 `RustStdoutStderr` |
 | Android | 打包安装 | `export ANDROID_NDK_ROOT=<ndk> && cargo apk build --features android-demo && adb install -r target/debug/apk/starfish-demo.apk` |
 | Web | 页面日志 + console | `python -m http.server 8000 -d testweb` → http://localhost:8000 （`scripts/build_web.sh` 重打包） |
@@ -323,14 +378,16 @@ WSLg 可实测）后 Wayland 横向拆分；Apple 系用 `objc2` 家族
 
 ---
 
-## 八、当前完成度（2026-09-26，对接前必读）
+## 八、当前完成度（2026-10-11，对接前必读）
 
 | 平台 | 实现程度 | 验证等级 |
 |---|---|---|
 | Windows | ~95%（缺：IME 组合、DPI 逻辑像素、全屏/图标/位置、运行时 resizable） | 真机实测 + 自动化测试 |
+| macOS | ~90%（缺：RedrawRequested 接线、IME 组合、全屏/图标/位置、运行时 resizable） | CI 真实 WindowServer 探针 + 全测试套件 ✅；wgpu 链路待实测 |
+| iOS | ~60%（v0：建窗+帧驱动+注入通道；缺：真实触摸、生命周期、键盘/TextInput、真机验证） | CI 模拟器冒烟 ✅（注入事件往返）；真机待验 |
 | Android | ~90%（缺：GameActivity、手势导航、软键盘控制 API、saveInstanceState） | 模拟器实测（四轮快打 0 panic）；真机待复测 |
 | Web | ~85%（缺：IME、rwh Web 注册表、wheel preventDefault） | 事件层已经人肉点验 ✅；wgpu-WebGPU 链路未跑通 |
-| Linux / macOS / iOS | 0%（stub） | 仅编译 |
+| Linux | 0%（stub） | 仅编译 |
 
 版本事实：raw-window-handle **0.6**（`#[non_exhaustive]`，用 `new()` 构造器；
 `WindowsDisplayHandle`/`AndroidDisplayHandle` 是空结构；Android 变体名是

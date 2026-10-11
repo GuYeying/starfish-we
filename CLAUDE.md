@@ -61,7 +61,7 @@ windows / linux(ubuntu) / macos / ios / android / web(wasm)。
 
 Windows 后端分层（值得沿用到其他后端）：`platform/windows/mod.rs` 只管建窗、`PeekMessageW` 泵、状态挂载（`GWLP_USERDATA`）与系统默认兜底；消息→`Event` 的翻译全部在 `platform/windows/translate.rs`（仅 `event` feature 编译，返回 `Option<LRESULT>`，`None` 回落系统默认）。因此 `--no-default-features --features window`（仅建窗）同样成立。
 
-已约定的实现取舍：坐标/尺寸一律**物理像素**（Per-Monitor V2 DPI 感知）；`TextInput` 走 `WM_CHAR` 直通、无 IME 组合（首版约定）；`WM_CLOSE` 只上报 `CloseRequested` 不销毁，销毁由 drop 决定；Alt+F4 等交系统默认。**Event 枚举是全平台统一词汇表，不按平台 cfg**：桌面端永不产生 `Touch` / `Suspended` / `Resumed`；移动端后端落地时把主手指合成为鼠标事件（SDL 惯例）。raw-window-handle 为 0.6（`#[non_exhaustive]`，须用 `new()` 构造器 + 字段赋值；`WindowsDisplayHandle` 是空结构）。Windows 的 `WindowInner` 有 `unsafe impl Sync`（仅为满足 wgpu `create_surface` 的 bound，方法仍限创建线程）。六平台 × {default, wgpu} 的 `cargo check` 全部通过。
+已约定的实现取舍：坐标/尺寸一律**物理像素**（Per-Monitor V2 DPI 感知）；`TextInput` 走 `WM_CHAR` 直通、无 IME 组合（首版约定）；`WM_CLOSE` 只上报 `CloseRequested` 不销毁，销毁由 drop 决定；Alt+F4 等交系统默认。**Event 枚举是全平台统一词汇表，不按平台 cfg**：桌面端永不产生 `Touch`（macOS 以最小化/还原映射 `Suspended`/`Resumed`，Windows 不产生）；移动端后端落地时把主手指合成为鼠标事件（SDL 惯例）。raw-window-handle 为 0.6（`#[non_exhaustive]`，须用 `new()` 构造器 + 字段赋值；`WindowsDisplayHandle` 是空结构）。Windows 的 `WindowInner` 有 `unsafe impl Sync`（仅为满足 wgpu `create_surface` 的 bound，方法仍限创建线程）。六平台 × {default, wgpu} 的 `cargo check` 全部通过。
 
 **wgpu 对接已实测**：`tests/wgpu_integration.rs`（`cargo test --features wgpu --test wgpu_integration`）真实走通 create_surface → configure → 取帧，零 unsafe。wgpu 30 注意事项：`create_surface` 要求 `Sync`；`get_current_texture` 返回枚举 `CurrentSurfaceTexture`（非 Result）；`SurfaceConfiguration` 多了必填 `color_space: SurfaceColorSpace`。wgpu/pollster 仅在 `[target.'cfg(windows)'.dev-dependencies]`，不进库依赖树。
 

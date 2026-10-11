@@ -50,9 +50,14 @@ loop {
 | 平台 | 窗口 | 事件 | 渲染对接 | 状态 |
 |---|---|---|---|---|
 | Windows | ✅ | ✅ 键鼠/滚轮/焦点 | ✅ wgpu 真机验证 | 可用 |
+| macOS | ✅ | ✅ 键鼠/滚轮/焦点 + 最小化→Suspended/Resumed | 句柄就绪（wgpu 链路未实测） | 可用（CI 冒烟验证） |
+| iOS | ✅ 全屏 | ⚠️ v0：仅注入通道——触摸/生命周期/键盘待接 | 句柄就绪 | v0（CI 模拟器冒烟 ✅） |
 | Android | ✅ | ✅ 含触摸+生命周期 | ✅ 句柄就绪 | 可用（模拟器验证） |
 | Web (wasm) | ✅ canvas | ✅ 含触摸+页面可见性 | `Window::canvas()` | 可用 |
-| Linux / macOS / iOS | — | — | — | 计划中（stub） |
+| Linux | — | — | — | 计划中（stub） |
+
+每次 push 都会在 GitHub 的 Mac runner 上跑 macOS + iOS 模拟器冒烟矩阵
+（`.github/workflows/macos.yml`）。
 
 各平台驱动原理、事件语义矩阵、注意事项与诊断手段见
 [`reference/wgpu接入指南.md`](reference/wgpu接入指南.md)

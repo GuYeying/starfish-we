@@ -112,17 +112,17 @@ travels through `TextInput`. `Modifiers { shift, ctrl, alt, meta }`
 **Platform production matrix** (variants a platform never produces simply
 never appear on it):
 
-| Event | Windows | Android | Web |
-|---|---|---|---|
-| CloseRequested | ✅ WM_CLOSE / Alt+F4 | ✅ Destroy / back key | ❌ (closing the page ends it) |
-| Resized | ✅ | ✅ | ✅ |
-| Focus | ✅ | ✅ | ✅ |
-| Keyboard / TextInput | ✅ | ✅ (IME committed text) | ✅ (no IME composition) |
-| Mouse | ✅ | synthesized from primary finger | ✅ |
-| Touch | ❌ | ✅ | ✅ |
-| RedrawRequested | ✅ WM_PAINT | ✅ RedrawNeeded/InitWindow | ✅ rAF, coalesced per frame |
-| Suspended / Resumed | ❌ | ✅ Pause·Stop·TerminateWindow / Resume·InitWindow | ✅ page hidden/visible |
-| User (custom) | ✅ host-injected | ✅ host-injected | ✅ host-injected |
+| Event | Windows | macOS | iOS | Android | Web |
+|---|---|---|---|---|---|
+| CloseRequested | ✅ WM_CLOSE / Alt+F4 | ✅ close button | ❌ (v0: no close concept) | ✅ Destroy / back key | ❌ (closing the page ends it) |
+| Resized | ✅ | ✅ | ✅ (initial only; inherently full-screen) | ✅ | ✅ |
+| Focus | ✅ | ✅ | ❌ (v0: not wired) | ✅ | ✅ |
+| Keyboard / TextInput | ✅ | ✅ (NSEvent characters) | ❌ (v0: not wired) | ✅ (IME committed text) | ✅ (no IME composition) |
+| Mouse | ✅ | ✅ | ❌ (v0: touch delivery not wired) | synthesized from primary finger | ✅ |
+| Touch | ❌ | ❌ | ❌ (v0: delivery not wired) | ✅ | ✅ |
+| RedrawRequested | ✅ WM_PAINT | ❌ (frame cadence = host tick) | ❌ (CADisplayLink drives the tick itself) | ✅ RedrawNeeded/InitWindow | ✅ rAF, coalesced per frame |
+| Suspended / Resumed | ❌ | ✅ miniaturize / deminiaturize | ❌ (v0: lifecycle not wired) | ✅ Pause·Stop·TerminateWindow / Resume·InitWindow | ✅ page hidden/visible |
+| User (custom) | ✅ host-injected | ✅ host-injected | ✅ host-injected (deterministic test channel) | ✅ host-injected | ✅ host-injected |
 
 ---
 
@@ -221,9 +221,11 @@ Per-platform surface sources:
 | Platform | surface source | status |
 |---|---|---|
 | Windows | `create_surface(&window)` (HWND+HINSTANCE carried automatically) | **verified on real hardware** ✅ |
+| macOS | same (NSWindow view + layer handles carried automatically) | traits implemented, wgpu path untested |
+| iOS | same (UIView + layer handles) | traits implemented, untested |
 | Android | same (ANativeWindow; valid only while `Resumed`) | traits implemented, device-side untested |
 | Web | `window.canvas()` → wgpu's Web backend (needs a WebGPU-capable browser) | accessor ready, path not yet exercised |
-| Linux / macOS / iOS | backends not implemented (stubs return `UnsupportedPlatform`) | see section 8 |
+| Linux | backend not implemented (stub returns `UnsupportedPlatform`) | see section 8 |
 
 ---
 
@@ -316,15 +318,83 @@ Per-platform surface sources:
   surrogate-pair characters are dropped in v1; the wheel listener does
   not `preventDefault` (fine as long as the page itself doesn't scroll).
 
-### 5.4 Linux / macOS / iOS (not implemented)
+### 5.4 macOS (AppKit, `objc2` family)
+
+- **Mechanism**: `poll_event` pumps available NSEvents non-blockingly
+  with `nextEventMatchingMask` — input events (keys/text/mouse) are
+  translated straight into the buffer; window-level events are
+  `sendEvent`-dispatched to AppKit so the window delegate fires
+  (close→`CloseRequested`, resize→`Resized`, focus,
+  **miniaturize→`Suspended` / deminiaturize→`Resumed`**), then one event
+  is popped. AppKit is main-thread only (enforced by a stored
+  `MainThreadMarker`).
+- Key codes are the Carbon virtual keycodes carried by `NSEvent keyCode`,
+  mapped to `KeyCode` by the full table in `translate.rs`; `TextInput`
+  comes from the NSEvent characters (no IME composition, same v1
+  convention as Windows).
+- **There is no `RedrawRequested`**: not wired on macOS; the frame
+  cadence is the host tick (interpreter-driven), decoupled from
+  AppKit's drawRect machinery.
+- The app is activated at creation (otherwise a background process
+  never gets keyboard focus).
+- Verification: CI runs a WindowServer probe on GitHub's real Mac
+  runners (real NSApplication + NSWindow creation + injected-event
+  roundtrip) plus the full test suite; **the wgpu surface path is
+  untested** (`HasWindowHandle` is platform-independent, expected to
+  pass through).
+
+### 5.5 iOS (UIKit, `objc2` family)
+
+- **Entry (statement-form macro)** — one line inside `fn main`:
+  ```rust
+  fn main() {
+      starfish_window::ios_main!(my_tick);   // hands the main thread to UIApplicationMain; never returns
+  }
+  fn my_tick(window: &starfish_window::Window) -> Option<i32> {
+      // called each frame via CADisplayLink on the main thread: poll + render
+      None // Some(code) exits the app with that status
+  }
+  ```
+  The difference from `android_main!` is deliberate: the Android glue
+  ABI requires a top-level `android_main` function; iOS has no such
+  contract, so **a statement is the right shape** (a macro that expands
+  to a `fn main` definition silently becomes a dead nested function
+  when invoked inside another body — learned the hard way: type checks
+  all green, zero runtime activity).
+- **Mechanism inversion** (same device as Android): the delegate's
+  `didFinishLaunching` creates the window (full-screen UIWindow + root
+  view controller) and installs a CADisplayLink; each frame drives the
+  host tick; `poll_event` drains the buffer queue with a zero-timeout
+  runloop pump. On iOS the library calls `Window::new` internally —
+  hosts do not call it themselves.
+- **Bootstrap pitfalls (fixed in code, do not regress)**: ① objc2
+  classes register lazily and the default runtime name embeds the
+  module path + version — `UIApplicationMain` resolves the delegate by
+  NAME, so force-register via `ClassType::class()` first and pin the
+  name with `#[name]`; ② at the end of application launch the key
+  window must have a `rootViewController` or UIKit raises
+  `NSInternalInconsistencyException`.
+- Coordinates = bounds × scale (physical pixels, same convention);
+  iOS windows are inherently full-screen, borderless and non-resizable
+  (platform facts; capability methods are fixed-value no-ops).
+- **v0 boundaries**: events flow only through the injection channel
+  (`ios_inject_test_event`, deterministic testing); real touch delivery
+  (needs a responder subclass), lifecycle `Suspended`/`Resumed`, and
+  keyboard/TextInput are not wired yet.
+- Verification: CI runs the smoke inside an iPhone simulator
+  (`simctl install+launch`), judged by the result-file protocol
+  `STARTED→FRAME0→OK/FAIL/PANIC` (a panic hook covers the
+  UIApplicationMain bootstrap; ObjC exceptions surface via
+  `--stderr=`) — the injected-event roundtrip passes; real device
+  pending.
+
+### 5.6 Linux (not implemented)
 
 Stub behavior: `Window::new` returns
 `WindowError::UnsupportedPlatform`; the six-target compile matrix is
-green (the event/type layer is fully usable). Plan: X11 first for Linux
-(`x11rb`, testable under WSLg), Wayland later as a horizontal split; the
-Apple pair via the `objc2` family (macOS = NSWindow + NSEvent pump, iOS =
-UIWindow + CAMetalLayer + buffer queue). **Do not promise shipments on
-these three until they land.**
+green (the event/type layer is fully usable). Plan: X11 first
+(`x11rb`, testable under WSLg), Wayland later as a horizontal split.
+**Do not promise shipments until it lands.**
 
 ---
 
@@ -356,6 +426,8 @@ these three until they land.**
 | Windows | window + events demo | `cargo run --example basic` |
 | Windows | wgpu integration regression | `cargo test --features wgpu --test wgpu_integration` |
 | Windows | full smoke suite | `cargo test` |
+| macOS | CI smoke (real Mac runner: probe + full suite) | after push, `gh run watch` (the `macos` job of `.github/workflows/macos.yml`) |
+| iOS | CI simulator smoke (window + injected roundtrip) | the `ios-sim` job of the same workflow; on failure read the result.txt terminal state + the `sim_stderr.txt` artifact |
 | Android | event / lifecycle logs | `adb logcat -s starfish`; panics additionally under `RustStdoutStderr` |
 | Android | build + install | `export ANDROID_NDK_ROOT=<ndk> && cargo apk build --features android-demo && adb install -r target/debug/apk/starfish-demo.apk` |
 | Web | page overlay + console | `python -m http.server 8000 -d testweb` → http://localhost:8000 (`scripts/build_web.sh` repackages) |
@@ -371,14 +443,16 @@ after the platform's own readiness signal.
 
 ---
 
-## 8. Current status (2026-09-26 — read before integrating)
+## 8. Current status (2026-10-11 — read before integrating)
 
 | Platform | Implementation | Verification level |
 |---|---|---|
 | Windows | ~95% (missing: IME composition, logical-pixel DPI API, fullscreen/icon/position, runtime resizable) | real-hardware tested + automated tests |
+| macOS | ~90% (missing: RedrawRequested wiring, IME composition, fullscreen/icon/position, runtime resizable) | CI real-WindowServer probe + full test suite ✅; wgpu path untested |
+| iOS | ~60% (v0: window + frame driver + injection channel; missing: real touch, lifecycle, keyboard/TextInput, real-device verification) | CI simulator smoke ✅ (injected-event roundtrip); real device pending |
 | Android | ~90% (missing: GameActivity, gesture nav, soft-input control API, saveInstanceState) | emulator-tested (4 rapid relaunch cycles, 0 panics); real device pending |
 | Web | ~85% (missing: IME, rwh Web registry, wheel preventDefault) | event layer manually verified ✅; the wgpu-WebGPU path not yet exercised |
-| Linux / macOS / iOS | 0% (stubs) | compile-only |
+| Linux | 0% (stub) | compile-only |
 
 Version facts: raw-window-handle **0.6** (`#[non_exhaustive]`; use the
 `new()` constructors; `WindowsDisplayHandle` / `AndroidDisplayHandle` are
