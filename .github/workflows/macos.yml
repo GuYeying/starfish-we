@@ -110,12 +110,22 @@ jobs:
       - name: Install and run smoke inside the simulator
         run: |
           xcrun simctl install booted target/ios_smoke.app
-          # --console-pty attaches the app's stdio, waits for exit, and
-          # returns the app's exit code.
-          # --console-pty 转发应用 stdio 并等待退出、转发退出码。
-          set -o pipefail
-          xcrun simctl launch --console-pty booted com.starfish.iossmoke 2>&1 | tee sim_out.txt
-          grep -q "iOS smoke OK" sim_out.txt
+          xcrun simctl launch booted com.starfish.iossmoke
+          # Poll the app's data container for the result file (the app
+          # self-exits after writing it).
+          # 轮询应用数据容器内的结果文件（应用写完即自行退出）。
+          RESULT=""
+          for i in $(seq 1 90); do
+            CONTAINER=$(xcrun simctl get_app_container booted com.starfish.iossmoke data 2>/dev/null || true)
+            if [ -n "$CONTAINER" ] && [ -f "$CONTAINER/tmp/result.txt" ]; then
+              RESULT="$CONTAINER/tmp/result.txt"
+              echo "=== result.txt ==="
+              cat "$RESULT"
+              break
+            fi
+            sleep 1
+          done
+          [ -n "$RESULT" ] && grep -q "^OK" "$RESULT"
 
       - name: Upload smoke result
         if: always()
