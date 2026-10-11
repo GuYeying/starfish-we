@@ -255,7 +255,9 @@ mod tests {
         assert!(matches!(mouse_button(0x110), MouseButton::Left));
         assert!(matches!(mouse_button(0x111), MouseButton::Right));
         assert!(matches!(mouse_button(0x114), MouseButton::Forward));
-        assert!(matches!(mouse_button(0x150), MouseButton::Other(0x150)));
+        // 0x105 does not fit u8 — MouseButton::Other truncates (as u8).
+        // 0x153 超出 u8 —— Other 按 `as u8` 截断。
+        assert!(matches!(mouse_button(0x105), MouseButton::Other(5)));
     }
 
     #[test]

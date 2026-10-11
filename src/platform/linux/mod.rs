@@ -200,7 +200,7 @@ impl WaylandState {
         self.window
             .wl_surface()
             .damage_buffer(0, 0, w as i32, h as i32);
-        self.window.set_buffer_scale(self.scale.max(1) as u32);
+        let _ = self.window.set_buffer_scale(self.scale.max(1) as u32);
         buffer
             .attach_to(self.window.wl_surface())
             .expect("buffer attach / 缓冲挂接失败");
@@ -554,7 +554,7 @@ impl WindowInner {
     }
 
     pub(crate) fn set_fullscreen(&self, fullscreen: bool) {
-        let mut core = self.lock_core();
+        let core = self.lock_core();
         if fullscreen {
             core.state.window.set_fullscreen(None);
         } else {
@@ -647,7 +647,7 @@ impl WindowInner {
     }
 
     pub(crate) fn restore(&self) {
-        let mut core = self.lock_core();
+        let core = self.lock_core();
         core.state.window.unset_maximized();
         core.state.window.unset_fullscreen();
     }
