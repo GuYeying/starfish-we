@@ -28,7 +28,7 @@
 mod ios {
     use std::cell::Cell;
 
-    use starfish_window::{Event, RawWindowHandle, UserEvent, Window};
+    use starfish_we::{Event, RawWindowHandle, UserEvent, Window};
 
     thread_local! {
         static FRAME: Cell<u32> = const { Cell::new(0) };
@@ -88,7 +88,7 @@ mod ios {
             }
             // Inject the deterministic test event.
             // 注入确定性测试事件。
-            starfish_window::ios_inject_test_event(Event::User(UserEvent::new(
+            starfish_we::ios_inject_test_event(Event::User(UserEvent::new(
                 7,
                 "sim-inject".to_string(),
             )));
@@ -139,7 +139,7 @@ fn main() {
     }
 
     #[cfg(target_os = "ios")]
-    starfish_window::ios_main!(ios::tick);
+    starfish_we::ios_main!(ios::tick);
     #[cfg(not(target_os = "ios"))]
     {
         println!("skipped: iOS-only smoke / 非 iOS 平台跳过");

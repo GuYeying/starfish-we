@@ -1,4 +1,4 @@
-# starfish-window Integration Guide (for the wgpu rendering layer / interpreter hosts)
+# starfish-we Integration Guide (for the wgpu rendering layer / interpreter hosts)
 
 > Audience: the agent / developer integrating this library. This is the
 > canonical entry point; it complements CLAUDE.md (repository engineering
@@ -38,7 +38,7 @@ Two iron rules run through the whole API:
 
 ```toml
 [dependencies]
-starfish-window = { path = "…", features = ["wgpu"] }
+starfish-we = { path = "…", features = ["wgpu"] }
 ```
 
 | feature | meaning |
@@ -52,7 +52,7 @@ Events are core — there is no "window without events" build shape.
 ### 2.2 Minimal window creation
 
 ```rust
-use starfish_window::{Window, WindowError};
+use starfish_we::{Window, WindowError};
 
 let mut window = Window::new("title", (800, 600), Default::default())?;   // shorthand
 // Or the full-option builder (a new option = a new method; non-breaking):
@@ -134,7 +134,7 @@ the channel lives in the common layer; behavior is identical on all six
 platforms.
 
 ```rust
-use starfish_window::{Event, EventProxy, UserEvent};
+use starfish_we::{Event, EventProxy, UserEvent};
 
 // ① Take a proxy (Clone, Send + Sync) — hand it to any worker thread
 let proxy: EventProxy = window.event_proxy();
@@ -182,7 +182,7 @@ Semantics and caveats:
 ## 4. The wgpu integration contract (rendering-loop template)
 
 ```rust
-use starfish_window::{Event, Window};
+use starfish_we::{Event, Window};
 
 let mut window = Window::builder().title("app").size((1280, 720)).build()?;
 let instance = wgpu::Instance::default();
@@ -254,7 +254,7 @@ Per-platform surface sources:
 - **Mechanism inversion**: the entry point and lifecycle are
   system-driven. The host integrates with one line:
   ```rust
-  starfish_window::android_main!(my_app_main);   // or a hand-written android_main + android_init
+  starfish_we::android_main!(my_app_main);   // or a hand-written android_main + android_init
   ```
   After that, the library translates `AndroidApp::poll_events(timeout=0)`
   + `input_events_iter()` callback streams **into a buffer queue** drained
@@ -301,7 +301,7 @@ Per-platform surface sources:
   driven by the host (interpreter tick with `setTimeout` /
   `requestAnimationFrame`).
 - **The window entity is a `<canvas>`**: looked up by id
-  `starfish-window`, else the page's first canvas, else created filling
+  `starfish-we`, else the page's first canvas, else created filling
   the page. Rendering attaches via `window.canvas()` → wgpu's Web backend
   (needs a WebGPU-capable browser, Chrome/Edge 113+).
 - Keys follow the W3C `KeyboardEvent.code` — same naming origin as
@@ -348,9 +348,9 @@ Per-platform surface sources:
 - **Entry (statement-form macro)** — one line inside `fn main`:
   ```rust
   fn main() {
-      starfish_window::ios_main!(my_tick);   // hands the main thread to UIApplicationMain; never returns
+      starfish_we::ios_main!(my_tick);   // hands the main thread to UIApplicationMain; never returns
   }
-  fn my_tick(window: &starfish_window::Window) -> Option<i32> {
+  fn my_tick(window: &starfish_we::Window) -> Option<i32> {
       // called each frame via CADisplayLink on the main thread: poll + render
       None // Some(code) exits the app with that status
   }

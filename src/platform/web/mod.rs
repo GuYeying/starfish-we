@@ -13,14 +13,14 @@
 //! 一个重绘标志（合并，不堆积），使 wgpu 用户每帧轮询到一次
 //! `RedrawRequested`。
 //!
-//! The window entity is a `<canvas>`: looked up by id `starfish-window`,
+//! The window entity is a `<canvas>`: looked up by id `starfish-we`,
 //! else the page's first canvas, otherwise one is created filling the
 //! page. Coordinates are converted to physical pixels via
 //! `devicePixelRatio` (same convention as desktop). Keys follow the W3C
 //! `KeyboardEvent.code`, same origin as [`KeyCode`] — a direct mapping.
 //! Closing the page ends everything: the Web has no `CloseRequested`
 //! semantics.
-//! 窗口实体是 `<canvas>`：按 id `starfish-window` 查找，其次取页面
+//! 窗口实体是 `<canvas>`：按 id `starfish-we` 查找，其次取页面
 //! 第一个 canvas，都没有则自建并铺满页面。
 //! 坐标按 `devicePixelRatio` 换算为物理像素（与桌面约定一致）。
 //! 键盘走 W3C `KeyboardEvent.code`，与 [`KeyCode`] 命名同源，直接映射。
@@ -261,7 +261,7 @@ impl WindowInner {
     pub(crate) fn set_fullscreen(&self, _fullscreen: bool) {
         Self::warn_once(
             "fullscreen",
-            "[starfish-window] web: FULLSCREEN not supported in v0 (requestFullscreen is a follow-up) / v0 暂不支持(后续接 requestFullscreen)",
+            "[starfish-we] web: FULLSCREEN not supported in v0 (requestFullscreen is a follow-up) / v0 暂不支持(后续接 requestFullscreen)",
         );
     }
 
@@ -284,7 +284,7 @@ impl WindowInner {
     pub(crate) fn set_mouse_grabbed(&self, grabbed: bool) {
         Self::warn_once(
             "mouse_grabbed",
-            "[starfish-window] web: MOUSE_GRABBED not supported in v0 (Pointer Lock is a follow-up) / v0 暂不支持(后续接 Pointer Lock)",
+            "[starfish-we] web: MOUSE_GRABBED not supported in v0 (Pointer Lock is a follow-up) / v0 暂不支持(后续接 Pointer Lock)",
         );
         let _ = grabbed;
     }
@@ -296,7 +296,7 @@ impl WindowInner {
     pub(crate) fn set_mouse_relative(&self, _enable: bool) {
         Self::warn_once(
             "mouse_relative",
-            "[starfish-window] web: relative mouse not supported in v0 / 相对鼠标 v0 暂不支持",
+            "[starfish-we] web: relative mouse not supported in v0 / 相对鼠标 v0 暂不支持",
         );
     }
 
@@ -329,7 +329,7 @@ impl WindowInner {
     pub(crate) fn set_always_on_top(&self, _top: bool) {
         Self::warn_once(
             "always_on_top",
-            "[starfish-window] web: ALWAYS_ON_TOP does not apply; ignored / 不适用,忽略",
+            "[starfish-we] web: ALWAYS_ON_TOP does not apply; ignored / 不适用,忽略",
         );
     }
 
@@ -340,14 +340,14 @@ impl WindowInner {
     pub(crate) fn minimize(&self) {
         Self::warn_once(
             "minimize",
-            "[starfish-window] web: minimize does not apply; ignored / 不适用,忽略",
+            "[starfish-we] web: minimize does not apply; ignored / 不适用,忽略",
         );
     }
 
     pub(crate) fn maximize(&self) {
         Self::warn_once(
             "maximize",
-            "[starfish-window] web: maximize does not apply; ignored / 不适用,忽略",
+            "[starfish-we] web: maximize does not apply; ignored / 不适用,忽略",
         );
     }
 
@@ -356,7 +356,7 @@ impl WindowInner {
     pub(crate) fn raise(&self) {
         Self::warn_once(
             "raise",
-            "[starfish-window] web: raise does not apply; ignored / 不适用,忽略",
+            "[starfish-we] web: raise does not apply; ignored / 不适用,忽略",
         );
     }
 
@@ -394,7 +394,7 @@ impl WindowInner {
     pub(crate) fn set_position(&self, _x: i32, _y: i32) {
         Self::warn_once(
             "position",
-            "[starfish-window] web: window positioning does not apply; ignored / 窗口定位不适用,忽略",
+            "[starfish-we] web: window positioning does not apply; ignored / 窗口定位不适用,忽略",
         );
     }
 
@@ -463,12 +463,12 @@ impl WindowInner {
 
     fn acquire_canvas(document: &Document) -> Result<HtmlCanvasElement, WindowError> {
         let found = document
-            .get_element_by_id("starfish-window")
+            .get_element_by_id("starfish-we")
             .or_else(|| document.query_selector("canvas").ok().flatten());
         let canvas: HtmlCanvasElement = match found {
             Some(el) => el.dyn_into().map_err(|_| {
                 WindowError::OsError(
-                    "the element with id=starfish-window is not a <canvas> / id=starfish-window 的元素不是 <canvas>"
+                    "the element with id=starfish-we is not a <canvas> / id=starfish-we 的元素不是 <canvas>"
                         .into(),
                 )
             })?,

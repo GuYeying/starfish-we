@@ -13,8 +13,8 @@
 
 #![cfg(windows)]
 
-use starfish_window::flags::WindowFlags;
-use starfish_window::{Event, EventProxyClosed, Window, WindowError};
+use starfish_we::flags::WindowFlags;
+use starfish_we::{Event, EventProxyClosed, Window, WindowError};
 
 #[test]
 fn window_lifecycle_and_builder() {

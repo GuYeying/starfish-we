@@ -28,7 +28,7 @@ use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::*;
 
 #[cfg(all(target_arch = "wasm32", target_os = "unknown"))]
-use starfish_window::{Event, Window};
+use starfish_we::{Event, Window};
 
 /// The real Web entry point; wasm-bindgen calls it via the `start` hook.
 /// 真正的 Web 入口；wasm-bindgen 以 `start` 钩子调用它。

@@ -1,4 +1,4 @@
-# starfish-window
+# starfish-we
 
 [中文说明](README.zh-CN.md)
 
@@ -11,11 +11,11 @@ host's own main loop.
 
 ```toml
 [dependencies]
-starfish-window = { path = ".", features = ["wgpu"] }
+starfish-we = { path = ".", features = ["wgpu"] }
 ```
 
 ```rust
-use starfish_window::{Event, Window};
+use starfish_we::{Event, Window};
 
 let mut window = Window::new("demo", (800, 600), Default::default())?;
 let surface = instance.create_surface(&window)?;   // wgpu feature: zero-unsafe passthrough

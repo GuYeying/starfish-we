@@ -12,7 +12,7 @@
 
 #![cfg(target_os = "linux")]
 
-use starfish_window::{Window, WindowError};
+use starfish_we::{Window, WindowError};
 
 #[test]
 fn new_reports_unsupported_platform() {

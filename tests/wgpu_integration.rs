@@ -21,8 +21,8 @@
 
 #![cfg(all(windows, feature = "wgpu"))]
 
-use starfish_window::Window;
-use starfish_window::flags::WindowFlags;
+use starfish_we::Window;
+use starfish_we::flags::WindowFlags;
 
 #[test]
 fn wgpu_surface_from_window_zero_unsafe() {
@@ -108,7 +108,7 @@ fn wgpu_surface_from_window_zero_unsafe() {
     //    set_size 之后下一次 acquire 直接返回新尺寸，消费侧零处理。
     #[cfg(feature = "wgpu-auto")]
     {
-        let mut auto = starfish_window::AutoSurface::new(&window, &instance)
+        let mut auto = starfish_we::AutoSurface::new(&window, &instance)
             .expect("AutoSurface::new failed / AutoSurface::new 失败");
         let frame = auto
             .acquire()

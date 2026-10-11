@@ -32,7 +32,7 @@ use crate::Window;
 ///         let view = frame.texture.create_view(&Default::default());
 ///         // render → frame.present()
 ///     }
-///     starfish_window::next_frame().await;
+///     starfish_we::next_frame().await;
 /// }
 /// ```
 pub struct AutoSurface<'w> {

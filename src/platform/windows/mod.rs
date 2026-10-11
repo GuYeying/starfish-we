@@ -51,7 +51,7 @@ use crate::window::WindowOptions;
 
 /// The window class name; registered once per process.
 /// 窗口类名；进程内只注册一次。
-const CLASS_NAME: &str = "starfish-window";
+const CLASS_NAME: &str = "starfish-we";
 
 pub(crate) struct WindowInner {
     hwnd: HWND,

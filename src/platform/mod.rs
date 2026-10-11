@@ -53,5 +53,5 @@ pub(crate) use windows as imp;
     all(target_arch = "wasm32", target_os = "unknown"),
 )))]
 compile_error!(
-    "starfish-window does not support this target platform yet / starfish-window 尚不支持该目标平台"
+    "starfish-we does not support this target platform yet / starfish-we 尚不支持该目标平台"
 );

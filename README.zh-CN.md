@@ -1,4 +1,4 @@
-# starfish-window
+# starfish-we
 
 [English](README.md)
 
@@ -8,11 +8,11 @@
 
 ```toml
 [dependencies]
-starfish-window = { path = ".", features = ["wgpu"] }
+starfish-we = { path = ".", features = ["wgpu"] }
 ```
 
 ```rust
-use starfish_window::{Event, Window};
+use starfish_we::{Event, Window};
 
 let mut window = Window::new("demo", (800, 600), Default::default())?;
 let surface = instance.create_surface(&window)?;   // wgpu feature：零 unsafe 直通

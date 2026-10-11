@@ -16,14 +16,14 @@ cat > testweb/index.html <<'HTML'
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>starfish-window web demo</title>
+<title>starfish-we web demo</title>
 <style>
   html, body { margin: 0; height: 100%; overflow: hidden; background: #16181d; }
   canvas { display: block; width: 100vw; height: 100vh; background: #232733; }
 </style>
 </head>
 <body>
-<canvas id="starfish-window"></canvas>
+<canvas id="starfish-we"></canvas>
 <script type="module">
   import init from './web_demo.js';
   init().catch((e) => {

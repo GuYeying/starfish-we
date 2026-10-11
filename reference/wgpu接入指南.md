@@ -1,4 +1,4 @@
-# starfish-window 接入指南（面向 wgpu 渲染层 / 解释器宿主）
+# starfish-we 接入指南（面向 wgpu 渲染层 / 解释器宿主）
 
 > English version: [wgpu-integration-guide.md](wgpu-integration-guide.md)。
 >
@@ -33,7 +33,7 @@
 
 ```toml
 [dependencies]
-starfish-window = { path = "…", features = ["wgpu"] }
+starfish-we = { path = "…", features = ["wgpu"] }
 ```
 
 | feature | 含义 |
@@ -47,7 +47,7 @@ starfish-window = { path = "…", features = ["wgpu"] }
 ### 2.2 最小建窗
 
 ```rust
-use starfish_window::{Window, WindowError};
+use starfish_we::{Window, WindowError};
 
 let mut window = Window::new("标题", (800, 600))?;          // 快捷方式
 // 或全选项 builder（新增选项 = 新增方法，非破坏性）：
@@ -123,7 +123,7 @@ pub enum Event {
 **平台无关**：通道在公共层实现，六平台行为完全一致。
 
 ```rust
-use starfish_window::{Event, EventProxy, UserEvent};
+use starfish_we::{Event, EventProxy, UserEvent};
 
 // ① 取代理（可 Clone，Send + Sync）——交给任意工作线程
 let proxy: EventProxy = window.event_proxy();
@@ -166,7 +166,7 @@ window.push_event(3, 12345u64);
 ## 四、wgpu 对接契约（渲染循环模板）
 
 ```rust
-use starfish_window::{Event, Window};
+use starfish_we::{Event, Window};
 
 let mut window = Window::builder().title("app").size((1280, 720)).build()?;
 let instance = wgpu::Instance::default();
@@ -229,12 +229,12 @@ create_surface → configure → 取帧 → 重配置再取帧，全程零 unsaf
 - **机制反转**：入口/生命周期由系统驱动。宿主入口两种接法（等价）：
   ```rust
   // 方式一：宏一行接入（推荐）
-  starfish_window::android_main!(my_app_main);   // 先 android_init 再交控制权
-  fn my_app_main(app: starfish_window::AndroidApp) { /* 主循环 */ }
+  starfish_we::android_main!(my_app_main);   // 先 android_init 再交控制权
+  fn my_app_main(app: starfish_we::AndroidApp) { /* 主循环 */ }
 
   // 方式二：手写入口（既有项目形态）
   #[unsafe(no_mangle)]
-  fn android_main(app: AndroidApp) { starfish_window::android_init(app); /* … */ }
+  fn android_main(app: AndroidApp) { starfish_we::android_init(app); /* … */ }
   ```
   此后本库把 `AndroidApp::poll_events(timeout=0)` + `input_events_iter()`
   的回调流**翻译进缓冲队列**，`poll_event` 排空——对宿主仍是纯 poll。
@@ -265,7 +265,7 @@ create_surface → configure → 取帧 → 重配置再取帧，全程零 unsaf
 - **机制反转**：DOM 是回调驱动。事件监听器把事件**缓冲进队列**，
   `poll_event` 排空；主循环节奏由宿主驱动（解释器 tick 配合
   `setTimeout`/`requestAnimationFrame`）。
-- **窗口实体 = `<canvas>`**：按 id `starfish-window` 查找，其次取页面
+- **窗口实体 = `<canvas>`**：按 id `starfish-we` 查找，其次取页面
   第一个 canvas，都没有则自建并铺满。渲染对接用 `window.canvas()`
   拿 `HtmlCanvasElement` 交给 wgpu 的 Web 后端（需浏览器 WebGPU，
   Chrome/Edge 113+）。
@@ -302,9 +302,9 @@ create_surface → configure → 取帧 → 重配置再取帧，全程零 unsaf
 - **入口（语句式宏）**：在 `fn main` 体内一行接入：
   ```rust
   fn main() {
-      starfish_window::ios_main!(my_tick);   // 把主线程交给 UIApplicationMain，永不返回
+      starfish_we::ios_main!(my_tick);   // 把主线程交给 UIApplicationMain，永不返回
   }
-  fn my_tick(window: &starfish_window::Window) -> Option<i32> {
+  fn my_tick(window: &starfish_we::Window) -> Option<i32> {
       // 每帧经 CADisplayLink 在主线程调用：poll 事件 + 渲染
       None // Some(code) 以该状态码退出应用
   }

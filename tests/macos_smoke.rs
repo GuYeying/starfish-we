@@ -21,8 +21,8 @@
 mod macos {
     use std::time::Duration;
 
-    use starfish_window::flags::WindowFlags;
-    use starfish_window::{Event, RawWindowHandle, Window};
+    use starfish_we::flags::WindowFlags;
+    use starfish_we::{Event, RawWindowHandle, Window};
 
     // CGEvent injection (ApplicationServices; minimal FFI surface for
     // tests).

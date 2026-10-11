@@ -20,9 +20,9 @@
 /// 再把控制权交给 `$main(app)`。宿主在 crate 根一行接入：
 ///
 /// ```ignore
-/// starfish_window::android_main!(my_app_main);
+/// starfish_we::android_main!(my_app_main);
 ///
-/// fn my_app_main(app: starfish_window::AndroidApp) {
+/// fn my_app_main(app: starfish_we::AndroidApp) {
 ///     // Your main loop: create a window, drive poll_event.
 ///     // 你的主循环：建窗 + poll_event 驱动
 /// }

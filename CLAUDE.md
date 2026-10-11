@@ -9,7 +9,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## 项目定位
 
-starfish-window 是一个跨平台的**单窗口 + 事件** crate，用于替换 winit。起因：winit 的事件循环是控制反转式的（调用者把闭包 / `ApplicationHandler` 交给 EventLoop，控制流由 winit 驱动，且 macOS 上必须独占主线程），这与宿主项目（脚本语言解释器需要自己持有并驱动主循环）冲突。
+starfish-we 是一个跨平台的**单窗口 + 事件** crate，用于替换 winit。起因：winit 的事件循环是控制反转式的（调用者把闭包 / `ApplicationHandler` 交给 EventLoop，控制流由 winit 驱动，且 macOS 上必须独占主线程），这与宿主项目（脚本语言解释器需要自己持有并驱动主循环）冲突。
 
 本 crate 采用 **SDL 风格运行模式：调用者拥有主循环，主动轮询（poll）事件**，窗口操作都是普通方法调用。
 
@@ -71,8 +71,8 @@ Windows 后端分层（值得沿用到其他后端）：`platform/windows/mod.rs
 
 两平台同用"回调写入缓冲队列、poll_event 排空"的反转装置。
 
-- **Web**（wasm-bindgen + web-sys）：窗口 = `<canvas>`（按 id `starfish-window` 找，缺省自建铺满）；键盘走 W3C `code`（`KeyCode::from_w3c_code`，仅 wasm 编译）；坐标 × devicePixelRatio = 物理像素；rAF 循环只置重绘标志（合并）；visibilitychange → Suspended/Resumed；Web 无 CloseRequested。打包：`scripts/build_web.sh` → `testweb/`，`python -m http.server 8000 -d testweb` 浏览器测试。**wasm-bindgen crate 版本必须与 wasm-bindgen-cli 精确一致（当前 =0.2.127，被 wgpu dev-dep→web-sys 0.3.104 钉死）**。
-- **Android**（android-activity 0.6 + NativeActivity）：宿主入口用 `starfish_window::android_main!(their_main)` 宏一行接入（展开为 `android_main`：先 `android_init` 再交控制权；手写 `android_main` + `android_init(app)` 亦可）；`Window::new` 阻塞等 surface（InitWindow，上限 10s）；生命周期 Pause/Stop/TerminateWindow→Suspended、Resume/InitWindow→Resumed、Destroy/返回键→CloseRequested；触摸→Touch+主手指(id 0)合成鼠标。内置演示宿主 = `android-demo` feature（`src/platform/android/entry.rs`），**apps/ 目录已并入 lib、workspace 已移除**。
+- **Web**（wasm-bindgen + web-sys）：窗口 = `<canvas>`（按 id `starfish-we` 找，缺省自建铺满）；键盘走 W3C `code`（`KeyCode::from_w3c_code`，仅 wasm 编译）；坐标 × devicePixelRatio = 物理像素；rAF 循环只置重绘标志（合并）；visibilitychange → Suspended/Resumed；Web 无 CloseRequested。打包：`scripts/build_web.sh` → `testweb/`，`python -m http.server 8000 -d testweb` 浏览器测试。**wasm-bindgen crate 版本必须与 wasm-bindgen-cli 精确一致（当前 =0.2.127，被 wgpu dev-dep→web-sys 0.3.104 钉死）**。
+- **Android**（android-activity 0.6 + NativeActivity）：宿主入口用 `starfish_we::android_main!(their_main)` 宏一行接入（展开为 `android_main`：先 `android_init` 再交控制权；手写 `android_main` + `android_init(app)` 亦可）；`Window::new` 阻塞等 surface（InitWindow，上限 10s）；生命周期 Pause/Stop/TerminateWindow→Suspended、Resume/InitWindow→Resumed、Destroy/返回键→CloseRequested；触摸→Touch+主手指(id 0)合成鼠标。内置演示宿主 = `android-demo` feature（`src/platform/android/entry.rs`），**apps/ 目录已并入 lib、workspace 已移除**。
 - **Android 进程复用（踩过的坑）**：用户"返回"只销毁 Activity，进程被系统缓存；再次启动时 `android_main` 在**同一进程、新线程**上二次执行。三个连环问题及修复：① `android_init` 曾用 `OnceLock` → 二次装配被静默忽略 → 闪退（已改 `Mutex<Option<AndroidApp>>` 覆盖式装配，并重置 `PENDING`/`WINDOW_READY`/单窗口占位 `reset_single_window_slot`）；② 旧实例的 `Destroy` 事件串扰进新实例事件流 → 二次启动秒退（已加 `WINDOW_READY` 门：未见 `InitWindow` 前丢弃 `Destroy`）；③ android-activity 0.6.1 胶水 static 不支持同进程"销毁中途重建"——新旧交叠时其 UI 线程回调 abort / 线程断言 panic（上游无修复版）。**宿主退出契约：收到 `CloseRequested` 或 `Suspended` 后立即终结进程**（demo 用 `libc::raise(SIGKILL)`，`exit(0)` 会留 RenderThread/JIT 的 SIGABRT/SIGSEGV 退出噪音）。另注意：返回键的 KeyDown 可能被系统拦截不派发（只见 Suspended），不能只依赖它。诊断手法：`adb logcat -s starfish RustStdoutStderr` 收 panic；模拟器可完整复现时序。关联参考：《android绑定运行问题与解决方案.md》（TLS 键耗尽 / surface 就绪时序，同类"平台运行时差异"问题）。
 - **Android 打包**：`export ANDROID_NDK_ROOT=D:/SDK/Android/ndk/30.0.16248370 && cargo apk build --features android-demo`（根包，无需 -p）→ `target/debug/apk/starfish-demo.apk`，`adb install` 安装，`adb logcat -s starfish` 看事件。APK 元数据在根 Cargo.toml `[package.metadata.android]`。本机 SDK 平台目录叫 `android-37.0`，已建 junction `platforms/android-37` 供 cargo-apk 识别（Google 源被网络拦截，sdkmanager 装不了别的平台）。注意 `[lib] crate-type = ["lib","cdylib"]`（APK 需要），桌面构建会多产出一个动态库文件属已知成本；cargo-apk 会尝试把 examples 也打包成 cdylib（对 `examples/basic` 报 `libbasic.so` 不存在——**非致命**，退出码仍 0，APK 正常产出）。
 - **rwh/wgpu（Android）**：`RawWindowHandle::AndroidNdk(AndroidNdkWindowHandle::new(NonNull))`（注意 rwh 0.6 变体名叫 AndroidNdk 不是 Android）；display 侧 `AndroidDisplayHandle::new()` 空结构。
@@ -82,7 +82,7 @@ Windows 后端分层（值得沿用到其他后端）：`platform/windows/mod.rs
 
 CI：`.github/workflows/macos.yml`（macos-14 runner，双 job）——`macos`：三目标编译矩阵 + 真实 NSWindow 探针（注入事件，`--test-threads=1` 保 MainThreadMarker）+ 全测试套件；`ios-sim`：编译检查 → 打包最小 .app（Info.plist + 可执行）→ `simctl install+launch` → **结果文件协议**判定。
 
-- **iOS 宿主入口 `ios_main!` 是语句式**：在 `fn main` 体内调用 `starfish_window::ios_main!(tick);`，展开为 `ios_start(tick)`（永不返回）。与 `android_main!` 的差异是刻意的：Android glue 的 ABI 要求顶层定义 `android_main` 函数，iOS 无此约定。**教训：宏若展开成 `fn main` 定义，被放进函数体时会静默变成永不执行的嵌套函数——类型检查全绿、运行时零声响**（iOS 冒烟因此哑火过一整轮）。
+- **iOS 宿主入口 `ios_main!` 是语句式**：在 `fn main` 体内调用 `starfish_we::ios_main!(tick);`，展开为 `ios_start(tick)`（永不返回）。与 `android_main!` 的差异是刻意的：Android glue 的 ABI 要求顶层定义 `android_main` 函数，iOS 无此约定。**教训：宏若展开成 `fn main` 定义，被放进函数体时会静默变成永不执行的嵌套函数——类型检查全绿、运行时零声响**（iOS 冒烟因此哑火过一整轮）。
 - **objc2 两个 UIKit 装配坑**：① `define_class!` 的类**惰性注册**（首次 `ClassType::class()` 才进 ObjC 运行时），而 `UIApplicationMain` 按**名字**查委托类——必须先 `<AppDelegate as ClassType>::class()` 强制注册；且 objc2 默认类名是 `模块路径::类名+版本`，经名字查找必须 `#[name = "..."]` 固定。② 启动结束时 key window 必须有 `rootViewController`，否则 `NSInternalInconsistencyException`（裸 UIWindow 不够，已挂空控制器）。
 - **iOS 冒烟诊断协议**（`tests/ios_sim_smoke.rs`）：分阶段写数据容器 `tmp/result.txt`——`STARTED`（进程起）→ `FRAME0`（tick 到）→ 终态 `OK`/`FAIL`/`PANIC`（panic 钩子装在 main 最早处，覆盖 UIApplicationMain 引导期）；CI 轮询**终态**（不能见文件即读——最早的 STARTED 瞬间就写入），stderr 经 `simctl launch --stderr=` 抓到宿主文件。**教训：判定步曾用 `grep || true` 掩盖 smoke 从未运行，产出假绿**；stderr/结果文件双通道 + 终态轮询后，NSException 类崩溃（Rust panic 钩子抓不到 ObjC 异常）靠 stderr 回溯定位。
 - **CI 布局与工作流 YAML 陷阱**：`macos.yml`（`macos`+`ios-sim` 双 job）+ `linux.yml`（`linux` job：编译矩阵 + 无后端测试下限（`tests/stub_platform.rs` 断言 stub 平台 `new()` 返回 `UnsupportedPlatform` 且不泄漏单窗口占位）+ wasm 交叉检查）。**工作流 YAML：步骤名含裸 `: `（冒号+空格）即解析错误**——症状是 run 零 job、0 秒失败、run 名退化成文件路径；给名字加引号即可（踩过，二分定位）。

@@ -1,6 +1,6 @@
-//! starfish-window: a cross-platform **single-window + events** crate
+//! starfish-we: a cross-platform **single-window + events** crate
 //! (SDL-style poll model).
-//! starfish-window：跨平台**单窗口 + 事件** crate（SDL 风格 poll 模型）。
+//! starfish-we：跨平台**单窗口 + 事件** crate（SDL 风格 poll 模型）。
 //!
 //! Built to replace winit where the inversion of control hurts: the caller
 //! (e.g. a scripting-language interpreter) owns the main loop and pulls
@@ -9,7 +9,7 @@
 //! 而不是把控制流交给事件循环的回调。
 //!
 //! ```ignore
-//! use starfish_window::{Event, Window, WindowFlags};
+//! use starfish_we::{Event, Window, WindowFlags};
 //!
 //! let mut window = Window::new("demo", (800, 600), WindowFlags::default())?;
 //! loop {
@@ -118,10 +118,10 @@ pub use platform::ios::entry::ios_start;
 ///
 /// ```ignore
 /// fn main() {
-///     starfish_window::ios_main!(my_tick); // never returns / 永不返回
+///     starfish_we::ios_main!(my_tick); // never returns / 永不返回
 /// }
 ///
-/// fn my_tick(window: &starfish_window::Window) -> Option<i32> {
+/// fn my_tick(window: &starfish_we::Window) -> Option<i32> {
 ///     // Per-frame: poll events + render + interpreter step.
 ///     // 每帧：poll 事件 + 渲染 + 解释器步进。
 ///     None // Some(code) exits the app / Some(code) 退出应用
@@ -160,7 +160,7 @@ macro_rules! ios_main {
 /// loop {
 ///     while let Some(event) = window.poll_event() { /* ... */ }
 ///     // draw ...
-///     starfish_window::next_frame().await;   // ← unconditional, all platforms
+///     starfish_we::next_frame().await;   // ← unconditional, all platforms
 /// }
 /// ```
 #[cfg(not(all(target_arch = "wasm32", target_os = "unknown")))]
