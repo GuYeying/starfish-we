@@ -45,6 +45,7 @@ use smithay_client_toolkit::{
     compositor::{CompositorHandler, CompositorState},
     delegate_registry,
     output::{OutputHandler, OutputState},
+    reexports::csd_frame::WindowState,
     registry::{ProvidesRegistryState, RegistryState},
     registry_handlers,
     seat::{
@@ -60,7 +61,7 @@ use smithay_client_toolkit::{
             XdgShell,
             window::{
                 DecorationMode, Window as SctkWindow, WindowConfigure, WindowDecorations,
-                WindowHandler, WindowState,
+                WindowHandler,
             },
         },
     },
