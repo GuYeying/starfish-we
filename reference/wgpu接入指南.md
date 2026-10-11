@@ -361,7 +361,8 @@ create_surface → configure → 取帧 → 重配置再取帧，全程零 unsaf
   正=向上）。
 - **能力近似表**（文档化取舍）：title/fullscreen/maximize/minimize 真实现；
   resizable = min=max 尺寸惯用法（xdg 无 resizable 请求）；无边框 =
-  xdg-decoration best-effort；position/opacity/always-on-top/鼠标抓取/相对
+  xdg-decoration 请求 + sctk-adwaita CSD（Mutter 无 xdg-decoration 时自动
+  以 Adwaita 标题栏/关闭按钮/拖拽/边缘缩放兜底，KWin 的 Server 装饰则让位）；position/opacity/always-on-top/鼠标抓取/相对
   鼠标/隐藏光标 = no-op（各自协议属后续项）；`set_size` 平铺合成器下仅咨询性。
 - **验证**：CI 在 headless Weston 下跑 `wayland_smoke`（连接→configure→shm
   提交→事件排空→单窗口守卫→drop 重建）；交互输入（打字/滚轮/关闭）在真机

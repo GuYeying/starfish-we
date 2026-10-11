@@ -425,7 +425,9 @@ Per-platform surface sources:
   convention positive = up).
 - **Capability approximations** (documented): title / fullscreen /
   maximize / minimize real; resizable = the min=max-size idiom (xdg has
-  no resizable request); borderless = xdg-decoration best-effort;
+  no resizable request); borderless = xdg-decoration request + sctk-adwaita CSD (Mutter lacks
+  xdg-decoration; the Adwaita frame draws titlebar/close/drag/resize
+  edges, and yields to KWin-style server decorations);
   position / opacity / always-on-top / mouse grab / relative mouse /
   cursor hide = no-op (their protocols are follow-ups); `set_size` is
   advisory under tiling compositors.
