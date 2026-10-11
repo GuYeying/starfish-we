@@ -81,11 +81,18 @@ jobs:
           UDID=$(xcrun simctl list devices available | awk '/-- iOS/{f=1;next} f&&/ \(/ {print; exit}' | grep -oE '[A-F0-9]{8}-([A-F0-9]{4}-){3}[A-F0-9]{12}' | head -1)
           echo "Booting simulator UDID: $UDID"
           xcrun simctl boot "$UDID"
+          # Wait until the simulator fully boots before spawning anything.
+          # 等模拟器完全启动后再执行任何 spawn。
+          xcrun simctl bootstatus "$UDID" -b
           echo "SIM_UDID=$UDID" >> "$GITHUB_ENV"
 
       - name: Run smoke inside the simulator
         run: |
           BIN=$(ls -t target/aarch64-apple-ios-sim/release/deps/ios_sim_smoke-* | grep -v '\.d$' | head -1)
-          set -euo pipefail
+          echo "Running: $BIN"
+          set -o pipefail
           xcrun simctl spawn "$SIM_UDID" "$BIN" 2>&1 | tee sim_out.txt
+          # Dump captured output even on failure for diagnosis.
+          # 失败时也输出捕获内容便于诊断。
+          cat sim_out.txt
           grep -q "iOS smoke OK" sim_out.txt
