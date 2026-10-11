@@ -70,7 +70,7 @@ use smithay_client_toolkit::{
     },
 };
 use wayland_client::{
-    Connection, QueueHandle,
+    Connection, Proxy as _, QueueHandle,
     globals::registry_queue_init,
     protocol::{wl_keyboard, wl_output, wl_pointer, wl_seat, wl_shm, wl_surface},
 };
@@ -199,7 +199,7 @@ impl WaylandState {
         self.window
             .wl_surface()
             .damage_buffer(0, 0, w as i32, h as i32);
-        self.window.set_buffer_scale(self.scale);
+        self.window.set_buffer_scale(self.scale.max(1) as u32);
         buffer
             .attach_to(self.window.wl_surface())
             .expect("buffer attach / 缓冲挂接失败");
@@ -243,7 +243,7 @@ pub(crate) struct WindowInner {
 
 struct WaylandCore {
     conn: Connection,
-    queue: wayland_client::event_queue::EventQueue<WaylandState>,
+    queue: wayland_client::EventQueue<WaylandState>,
     state: WaylandState,
     /// The title we last set (round-trips through `title()`).
     /// 最近设置的标题（供 `title()` 往返）。
@@ -273,7 +273,7 @@ impl WindowInner {
                 format!(
                     "failed to connect to a Wayland compositor (WAYLAND_DISPLAY not set?) / 无法连接 Wayland 合成器（WAYLAND_DISPLAY 未设置？）: {err}"
                 )
-                .into_boxed_str(),
+                .into(),
             )
         })?;
 
@@ -281,8 +281,7 @@ impl WindowInner {
         // 2. 注册表枚举——第一次（阻塞）往返。
         let (globals, queue) = registry_queue_init::<WaylandState>(&conn).map_err(|err| {
             WindowError::OsError(
-                format!("wayland registry init failed / Wayland 注册表初始化失败: {err}")
-                    .into_boxed_str(),
+                format!("wayland registry init failed / Wayland 注册表初始化失败: {err}").into(),
             )
         })?;
         let qh = queue.handle();
@@ -344,7 +343,7 @@ impl WindowInner {
         // 6. 可见性底色的像素池。
         let pool = SlotPool::new((4 * req_w * req_h) as usize, &shm).map_err(|err| {
             WindowError::OsError(
-                format!("wl_shm pool creation failed / wl_shm 池创建失败: {err}").into_boxed_str(),
+                format!("wl_shm pool creation failed / wl_shm 池创建失败: {err}").into(),
             )
         })?;
 
@@ -397,8 +396,7 @@ impl WindowInner {
             for _ in 0..3 {
                 queue.roundtrip(&mut state).map_err(|err| {
                     WindowError::OsError(
-                        format!("wayland roundtrip failed / Wayland 往返失败: {err}")
-                            .into_boxed_str(),
+                        format!("wayland roundtrip failed / Wayland 往返失败: {err}").into(),
                     )
                 })?;
                 if !state.first_configure {
@@ -441,26 +439,26 @@ impl WindowInner {
             return core.state.pending.pop_front();
         }
 
-        // 1) Flush outbound requests; a full socket buffer is transient.
-        // 1) 冲刷出站请求；socket 缓冲满属暂时性。
-        if let Err(err) = core.queue.flush() {
-            if !is_would_block(&err) {
-                return core.die();
-            }
-        }
+        // 1) Flush outbound requests; errors resurface in read/dispatch
+        //    below (a full socket buffer is transient, not fatal).
+        // 1) 冲刷出站请求；错误会在下方 read/dispatch 复现（socket 缓冲满
+        //    属暂时性，非致命）。
+        let _ = core.queue.flush();
         // 2) Dispatch already-buffered events.
         // 2) 派发已缓冲事件。
         if core.queue.dispatch_pending(&mut core.state).is_err() {
             return core.die();
         }
-        // 3) Try to read more from the socket — WouldBlock simply means
-        //    "nothing new" (the read path is WouldBlock-aware internally).
-        // 3) 尝试从 socket 再读——WouldBlock 只表示"没有新事件"（读路径
-        //    内部即按 WouldBlock 处理）。
+        // 3) Try to read more from the socket — an Err here is fatal (a
+        //    WouldBlock-style idle read is handled inside wayland-client
+        //    and surfaces as Ok(0)); `None` means events were already
+        //    buffered (step 2 dispatched them).
+        // 3) 尝试从 socket 再读——此处 Err 即致命（WouldBlock 类的空闲
+        //    读在 wayland-client 内部已被消化为 Ok(0)）；`None` 表示已有
+        //    事件缓冲（第 2 步已派发）。
         let read = core.queue.prepare_read().map(|guard| guard.read());
-        match &read {
-            Some(Err(err)) if !is_would_block(err) => return core.die(),
-            _ => {}
+        if matches!(read, Some(Err(_))) {
+            return core.die();
         }
         // 4) Dispatch what step 3 read.
         // 4) 派发第 3 步读到的事件。
@@ -555,7 +553,7 @@ impl WindowInner {
 
     pub(crate) fn set_borderless(&self, borderless: bool) {
         let mut core = self.lock_core();
-        core.borderless = borderless;
+        core.state.borderless = borderless;
         // Best-effort: honored by compositors implementing xdg-decoration.
         // Best-effort：实现 xdg-decoration 的合成器会尊重。
         core.state
@@ -704,15 +702,6 @@ impl WaylandCore {
         }
         self.state.pending.pop_front()
     }
-}
-
-/// `WouldBlock` is not an error in the pump — it means "idle".
-/// `WouldBlock` 在泵里不是错误——含义是"空闲"。
-fn is_would_block(err: &wayland_client::WaylandError) -> bool {
-    matches!(
-        err,
-        wayland_client::WaylandError::Io(io) if io.kind() == std::io::ErrorKind::WouldBlock
-    )
 }
 
 /// Pushes `KeyDown{repeat:true}` + `TextInput` for every due repeat tick
