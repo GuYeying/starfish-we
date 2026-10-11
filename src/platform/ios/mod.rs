@@ -50,7 +50,7 @@ use objc2_core_foundation::CGRect;
 // module docs).
 // v0 装配有意使用已弃用的 mainScreen 路径（见模块文档）。
 #[allow(deprecated)]
-use objc2_ui_kit::{UIApplication, UIColor, UIScreen, UIWindow};
+use objc2_ui_kit::{UIApplication, UIColor, UIScreen, UIViewController, UIWindow};
 
 use crate::error::WindowError;
 use crate::event::Event;
@@ -137,6 +137,15 @@ impl WindowInner {
             let clear = unsafe { UIColor::clearColor() };
             window.setBackgroundColor(Some(&clear));
         }
+
+        // UIKit asserts at the end of application launch that the key
+        // window has a root view controller (NSInternalInconsistencyException
+        // otherwise). v0: a bare controller, no view hierarchy of its own.
+        // UIKit 在应用启动结束时断言 key window 必须有 root view
+        // controller（否则抛 NSInternalInconsistencyException）。
+        // v0：裸控制器，自身无视图层级。
+        let root = unsafe { UIViewController::init(mtm.alloc::<UIViewController>()) };
+        window.setRootViewController(Some(&root));
 
         // Physical size cache: bounds (points) × scale.
         // 物理尺寸缓存：bounds（点）× scale。
